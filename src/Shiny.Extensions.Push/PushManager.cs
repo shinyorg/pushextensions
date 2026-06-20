@@ -46,6 +46,12 @@ public class PushManager : IPushManager
     public Task UnregisterDevice(string deviceToken, DevicePlatform platform, CancellationToken cancellationToken = default)
         => this.repository.Remove(deviceToken, platform, cancellationToken);
 
+    public Task SubscribeToTopic(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default)
+        => this.repository.Subscribe(deviceToken, platform, topic, cancellationToken);
+
+    public Task UnsubscribeFromTopic(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default)
+        => this.repository.Unsubscribe(deviceToken, platform, topic, cancellationToken);
+
 
     public Task<PushSendResult> SendToUser(string userIdentifier, PushNotification notification, CancellationToken cancellationToken = default)
         => this.Send(notification, new PushFilter { UserIdentifier = userIdentifier }, cancellationToken);
@@ -56,6 +62,9 @@ public class PushManager : IPushManager
     public Task<PushSendResult> SendToTokens(IEnumerable<string> deviceTokens, PushNotification notification, CancellationToken cancellationToken = default)
         => this.Send(notification, new PushFilter { DeviceTokens = deviceTokens.ToList() }, cancellationToken);
 
+    public Task<PushSendResult> SendToTopic(string topic, PushNotification notification, CancellationToken cancellationToken = default)
+        => this.Send(notification, new PushFilter { Topic = topic }, cancellationToken);
+
     public Task<PushSendResult> Broadcast(PushNotification notification, CancellationToken cancellationToken = default)
         => this.Send(notification, PushFilter.Broadcast, cancellationToken);
 
@@ -64,6 +73,9 @@ public class PushManager : IPushManager
     {
         var batchId = Guid.NewGuid();
         var results = new ConcurrentBag<PushDeliveryResult>();
+
+        using var activity = PushDiagnostics.Source.StartActivity("push.send");
+        activity?.SetTag("push.batch_id", batchId);
 
         this.logger.LogInformation("Push batch {BatchId} starting", batchId);
 
@@ -84,6 +96,13 @@ public class PushManager : IPushManager
         ).ConfigureAwait(false);
 
         var sendResult = new PushSendResult { BatchId = batchId, Results = results.ToList() };
+
+        activity?.SetTag("push.total", sendResult.Total);
+        activity?.SetTag("push.sent", sendResult.Sent);
+        activity?.SetTag("push.failed", sendResult.Failed);
+        activity?.SetTag("push.tokens_removed", sendResult.TokensRemoved);
+        activity?.SetTag("push.skipped", sendResult.Skipped);
+
         this.logger.LogInformation(
             "Push batch {BatchId} complete: {Sent} sent, {Failed} failed, {Removed} pruned, {Skipped} skipped",
             batchId, sendResult.Sent, sendResult.Failed, sendResult.TokensRemoved, sendResult.Skipped
@@ -94,13 +113,18 @@ public class PushManager : IPushManager
 
     async Task<PushDeliveryResult> DeliverOne(Guid batchId, PushNotification notification, DeviceRegistration registration, CancellationToken ct)
     {
+        using var activity = PushDiagnostics.Source.StartActivity("push.deliver");
+        activity?.SetTag("push.platform", registration.Platform.ToString());
+
         var provider = this.providers.FirstOrDefault(p => p.CanDeliver(registration));
         if (provider == null)
         {
             this.logger.LogWarning("No provider can deliver to platform {Platform} (token {Token})", registration.Platform, Mask(registration.DeviceToken));
             this.metrics.RecordNoProvider(registration.Platform);
+            activity?.SetStatus(ActivityStatusCode.Error, "no provider");
             return PushDeliveryResult.Failed(registration, PushDeliveryStatus.NoProvider, "no provider for platform");
         }
+        activity?.SetTag("push.provider", provider.Identifier);
 
         var context = new PushSendContext(batchId, registration, notification);
 
@@ -111,6 +135,7 @@ public class PushManager : IPushManager
             if (decision.Decision == InterceptorDecision.Skip)
             {
                 this.metrics.RecordSkipped(registration.Platform, provider.Identifier);
+                activity?.SetTag("push.status", nameof(PushDeliveryStatus.Skipped));
                 return PushDeliveryResult.Failed(registration, PushDeliveryStatus.Skipped);
             }
         }
@@ -130,6 +155,10 @@ public class PushManager : IPushManager
             result = PushDeliveryResult.Failed(registration, PushDeliveryStatus.Error, ex.Message, ex);
         }
         var elapsedMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+
+        activity?.SetTag("push.status", result.Status.ToString());
+        if (!result.IsSuccess)
+            activity?.SetStatus(ActivityStatusCode.Error, result.Reason);
 
         await this.HandleResult(context, result, provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
         return result;

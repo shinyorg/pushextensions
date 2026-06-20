@@ -19,6 +19,7 @@ public sealed class PushRegistrationDocument
     public string? DeviceId { get; set; }
     public string? UserIdentifier { get; set; }
     public List<string> Tags { get; set; } = [];
+    public List<string> Topics { get; set; } = [];
     public string? Locale { get; set; }
     public string? AppVersion { get; set; }
     public PushEnvironment Environment { get; set; }
@@ -38,6 +39,7 @@ public sealed class PushRegistrationDocument
         DeviceId = r.DeviceId,
         UserIdentifier = r.UserIdentifier,
         Tags = [.. r.Tags],
+        Topics = [.. r.Topics],
         Locale = r.Locale,
         AppVersion = r.AppVersion,
         Environment = r.Environment,
@@ -54,6 +56,7 @@ public sealed class PushRegistrationDocument
         DeviceId = this.DeviceId,
         UserIdentifier = this.UserIdentifier,
         Tags = this.Tags,
+        Topics = this.Topics,
         Locale = this.Locale,
         AppVersion = this.AppVersion,
         Environment = this.Environment,

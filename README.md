@@ -1,9 +1,94 @@
 # Shiny.Extensions.Push
 
-Server-side push notification dispatch for .NET. Provider-agnostic core with a direct **APNs** transport
-(token-based `.p8` / ES256 over HTTP/2). AOT/trim friendly.
+Server-side push notification dispatch for .NET. Provider-agnostic core with transports for **APNs**
+(direct, `.p8`/ES256 over HTTP/2), **FCM** (HTTP v1) and **Web Push** (VAPID + RFC 8291). Structured
+targeting, topics, interceptors, dead-token pruning, multi-app keyed registration, metrics + tracing.
+AOT/trim friendly (verified by a native-AOT smoke test).
 
-See [CLAUDE.md](./CLAUDE.md) for the architecture and decision log.
+See [`samples/Push.Api`](./samples/Push.Api) for a runnable ASP.NET Core API with a Scalar UI.
+
+| Package | Transport |
+|---|---|
+| `Shiny.Extensions.Push` | core (manager, in-memory repo, debug provider) |
+| `Shiny.Extensions.Push.Apns` | Apple (iOS/macOS) |
+| `Shiny.Extensions.Push.Fcm` | Android (FCM HTTP v1) |
+| `Shiny.Extensions.Push.WebPush` | Browsers (VAPID) |
+| `Shiny.Extensions.Push.DocumentDb` | persistence over any Shiny.DocumentDb backend |
+
+## Platform setup
+
+Before the library can send anything you need credentials from each platform, and the client app has to
+hand its device token/subscription to your server. The end-to-end setup per platform:
+
+### Apple — APNs (iOS / macOS)
+
+Requires a **paid Apple Developer account**.
+
+1. **Create an APNs auth key (.p8).** [developer.apple.com](https://developer.apple.com/account) →
+   *Certificates, Identifiers & Profiles* → **Keys** → **+**. Give it a name, tick **Apple Push
+   Notifications service (APNs)**, register, then **Download** the `.p8` (you can only download it once —
+   store it safely). Note the **Key ID** (10 chars) shown next to the key.
+2. **Get your Team ID** (10 chars) — top-right of the developer portal, or the *Membership* page.
+3. **Bundle ID** — under *Identifiers*, your App ID (e.g. `com.example.app`). Make sure that App ID has
+   the **Push Notifications** capability enabled.
+4. **Client app** — enable the *Push Notifications* capability, call `registerForRemoteNotifications`, and
+   POST the returned device token to your server. (Use [`Shiny.Push`](https://shinylib.net/push/) or the
+   native APIs.)
+5. **Sandbox vs production** — token auth uses the **same `.p8`** for both; only the APNs host differs and
+   is chosen per device by `DeviceRegistration.Environment`. Debug builds get sandbox tokens, App
+   Store/TestFlight builds get production tokens — the two are **not** interchangeable.
+
+You end up with: **TeamId**, **KeyId**, **BundleId**, and the **`AuthKey_XXXXXXXXXX.p8`** file.
+
+### Android — FCM (HTTP v1)
+
+Requires a **Google / Firebase account**.
+
+1. **Create a Firebase project** at [console.firebase.google.com](https://console.firebase.google.com)
+   (or reuse one). Note the **Project ID**.
+2. **Add your Android app** (its package name) and download **`google-services.json`** for the *client*
+   app.
+3. **Create a server service-account key.** Firebase Console → *Project settings* → **Service accounts** →
+   **Generate new private key** → downloads a JSON file containing `project_id`, `client_email`, and
+   `private_key`. This is the **server** credential — keep it secret.
+4. Ensure the **Firebase Cloud Messaging API (V1)** is enabled (Project settings → *Cloud Messaging*, or
+   the Google Cloud console → *APIs & Services*).
+5. **Client app** — integrate the Firebase SDK, obtain the FCM registration token, and POST it to your
+   server.
+
+You end up with: the **service-account JSON** (pass its path or contents to `AddFcm`).
+
+### Web Push (browsers — VAPID)
+
+Requires your site served over **HTTPS** (or `localhost`) with a **service worker**.
+
+1. **Generate VAPID keys once.** Easiest with the [`web-push`](https://www.npmjs.com/package/web-push)
+   CLI:
+   ```bash
+   npm install -g web-push
+   web-push generate-vapid-keys      # prints a base64url Public Key and Private Key
+   ```
+   (Any P-256 key pair works: the public key is the 65-byte uncompressed point as base64url, the private
+   key the 32-byte scalar as base64url.) Pick a **Subject** — a `mailto:` or `https:` contact URL.
+2. **Subscribe in the browser** (register a service worker, then subscribe with the VAPID **public** key):
+   ```js
+   const reg = await navigator.serviceWorker.register('/sw.js');
+   const sub = await reg.pushManager.subscribe({
+     userVisibleOnly: true,
+     applicationServerKey: '<VAPID_PUBLIC_KEY>'   // base64url
+   });
+   // POST to your server: sub.endpoint, sub.toJSON().keys.p256dh, sub.toJSON().keys.auth
+   ```
+3. **Handle the push in the service worker** (`/sw.js`):
+   ```js
+   self.addEventListener('push', e => {
+     const d = e.data.json();
+     e.waitUntil(self.registration.showNotification(d.title, { body: d.body, data: d }));
+   });
+   ```
+
+You end up with: VAPID **PublicKey**, **PrivateKey**, **Subject**, and per device the **endpoint** +
+**p256dh** + **auth** (mapped to `DeviceToken` and `Data` — see [Register a device](#register-a-device)).
 
 ## Wiring
 
@@ -18,23 +103,50 @@ services.AddPushNotifications(push =>
         o.PrivateKeyPath = "AuthKey_KEY1234567.p8";   // or o.PrivateKey = "<PEM>"
     });
 
-    // push.UseRepository<DocumentDbPushRepository>();  // defaults to in-memory
+    push.AddFcm(o => o.ServiceAccountJsonPath = "firebase-service-account.json");
+
+    push.AddWebPush(o =>
+    {
+        o.PublicKey  = "<vapid-public-key>";    // base64url (web-push format)
+        o.PrivateKey = "<vapid-private-key>";
+        o.Subject    = "mailto:you@example.com";
+    });
+
+    // push.UseDocumentDb(o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=push.db"));
     // push.AddInterceptor<LocalizationInterceptor>();
     // push.Configure(m => m.MaxDegreeOfParallelism = 25);
 });
 ```
 
+A device registers its platform (`iOS`, `MacOS`, `Android`, `WebBrowser`); the manager routes it to the
+provider that claims it. Web Push registrations put the subscription endpoint in `DeviceToken` and the
+`p256dh`/`auth` keys in `Data`.
+
 ## Register a device
 
 ```csharp
+// APNs (iOS/macOS) and FCM (Android): the platform's device token
 await pushManager.RegisterDevice(new DeviceRegistration
 {
-    DeviceToken    = "<apns-token>",
-    Platform       = DevicePlatform.iOS,
+    DeviceToken    = "<apns-or-fcm-token>",
+    Platform       = DevicePlatform.iOS,      // or Android
     DeviceId       = "install-guid",          // stable identity across token rotation
     UserIdentifier = "user-42",
     Tags           = ["beta", "sports"],
     Environment    = PushEnvironment.Production
+});
+
+// Web Push: endpoint goes in DeviceToken; p256dh/auth go in Data
+await pushManager.RegisterDevice(new DeviceRegistration
+{
+    DeviceToken    = subscription.Endpoint,
+    Platform       = DevicePlatform.WebBrowser,
+    UserIdentifier = "user-42",
+    Data           = new Dictionary<string, string>
+    {
+        ["p256dh"] = subscription.Keys.P256dh,
+        ["auth"]   = subscription.Keys.Auth
+    }
 });
 ```
 
@@ -109,18 +221,31 @@ services.AddPushNotifications(push =>
 });
 ```
 
-Token-keyed operations (save, remove, rotation) are O(1) point lookups. Targeted sends currently scan +
-filter in-process (see CLAUDE.md decision 10).
+Token-keyed operations (save, remove, rotation, subscribe) are O(1) point lookups. Targeted sends push
+`UserIdentifier`/`AppId` equality into the store query and filter the rest in-process.
 
-## Metrics
+## Topics
 
-Telemetry is emitted via `System.Diagnostics.Metrics` under the meter **`Shiny.Extensions.Push`**
-(`PushMetrics.MeterName`): counters `push.notifications.sent` / `.failed` / `.skipped`,
-`push.tokens.pruned`, and histogram `push.send.duration` (ms) — tagged by `platform`, `provider`,
-`status`. Wire it into OpenTelemetry:
+Topics are server-side subscriptions that work across every provider:
 
 ```csharp
-services.AddOpenTelemetry().WithMetrics(m => m.AddMeter(PushMetrics.MeterName));
+await pushManager.SubscribeToTopic("<token>", DevicePlatform.iOS, "sports");
+await pushManager.SendToTopic("sports", new PushNotification { Title = "Goal!" });
+await pushManager.UnsubscribeFromTopic("<token>", DevicePlatform.iOS, "sports");
+```
+
+## Metrics & tracing
+
+Metrics via `System.Diagnostics.Metrics` under the meter **`Shiny.Extensions.Push`**
+(`PushMetrics.MeterName`): counters `push.notifications.sent` / `.failed` / `.skipped`,
+`push.tokens.pruned`, and histogram `push.send.duration` (ms) — tagged by `platform`, `provider`,
+`status`. Distributed tracing via the `ActivitySource` of the same name (`push.send` batch span +
+`push.deliver` per-device span). Wire both into OpenTelemetry:
+
+```csharp
+services.AddOpenTelemetry()
+    .WithMetrics(m => m.AddMeter(PushMetrics.MeterName))
+    .WithTracing(t => t.AddSource(PushDiagnostics.ActivitySourceName));
 ```
 
 > Note: this library surfaces `RateLimited` on the result but does **not** retry — backoff/`Retry-After`

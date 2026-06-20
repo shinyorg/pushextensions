@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+
+    <!-- Native AOT: build/publish surfaces every trim + AOT warning across the referenced libraries.
+         Warnings are errors so the smoke test fails CI if any provider regresses AOT-compatibility. -->
+    <PublishAot>true</PublishAot>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Shiny.Extensions.Push\Shiny.Extensions.Push.csproj" />
+    <ProjectReference Include="..\..\src\Shiny.Extensions.Push.Apns\Shiny.Extensions.Push.Apns.csproj" />
+    <ProjectReference Include="..\..\src\Shiny.Extensions.Push.Fcm\Shiny.Extensions.Push.Fcm.csproj" />
+    <ProjectReference Include="..\..\src\Shiny.Extensions.Push.WebPush\Shiny.Extensions.Push.WebPush.csproj" />
+  </ItemGroup>
+
+</Project>

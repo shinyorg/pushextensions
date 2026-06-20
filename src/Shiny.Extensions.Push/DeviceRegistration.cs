@@ -41,6 +41,14 @@ public record DeviceRegistration
     /// <summary>Free-form tags/segments for targeting (e.g. "beta", "sports", "en-US").</summary>
     public IReadOnlyList<string> Tags { get; init; } = [];
 
+    /// <summary>
+    /// Named topic subscriptions for pub/sub-style fan-out. Managed via
+    /// <see cref="IPushManager.SubscribeToTopic"/> / <see cref="IPushManager.UnsubscribeFromTopic"/> and
+    /// targeted via <see cref="IPushManager.SendToTopic"/>. Distinct from <see cref="Tags"/>, which are
+    /// arbitrary segmentation.
+    /// </summary>
+    public IReadOnlyList<string> Topics { get; init; } = [];
+
     /// <summary>BCP-47 locale (e.g. "en-US") used by localization interceptors.</summary>
     public string? Locale { get; init; }
 

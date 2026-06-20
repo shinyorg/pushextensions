@@ -1,6 +1,6 @@
 ---
 name: shiny-extensions-push
-description: Generate code using Shiny.Extensions.Push, a server-side push notification dispatch library for .NET with a provider-agnostic core, direct APNs (token .p8 / ES256 over HTTP/2), Shiny.DocumentDb persistence, structured targeting, interceptors, dead-token pruning, multi-app keyed registration, and System.Diagnostics.Metrics — fully AOT/trim-safe.
+description: Generate code using Shiny.Extensions.Push, a server-side push notification dispatch library for .NET with a provider-agnostic core and transports for APNs (.p8/ES256), FCM (HTTP v1) and Web Push (VAPID + RFC 8291), plus Shiny.DocumentDb persistence, structured targeting, topics, interceptors, dead-token pruning, multi-app keyed registration, and System.Diagnostics.Metrics + tracing — fully AOT/trim-safe.
 auto_invoke: true
 triggers:
   - AddPushNotifications
@@ -16,9 +16,18 @@ triggers:
   - AddApns
   - ApnsProvider
   - ApnsOptions
+  - AddFcm
+  - FcmProvider
+  - FcmOptions
+  - AddWebPush
+  - WebPushProvider
+  - WebPushOptions
   - UseDocumentDb
   - DocumentDbPushRepository
   - PushMetrics
+  - PushDiagnostics
+  - SubscribeToTopic
+  - SendToTopic
   - DevicePlatform
   - PushEnvironment
   - SendToUser
@@ -26,6 +35,8 @@ triggers:
   - Shiny.Extensions.Push
   - server push notification
   - APNs server
+  - FCM server
+  - web push VAPID
   - send push from server
 ---
 
@@ -43,11 +54,12 @@ Invoke this skill when the user wants to:
 - Send push notifications from a .NET **server/backend** (ASP.NET Core, worker, Aspire) to mobile/desktop devices
 - Register/unregister device tokens and store them (in-memory or Shiny.DocumentDb)
 - Send to a user across all their devices, to tags/segments, to explicit tokens, or broadcast
-- Talk to **APNs directly** with a `.p8` auth key (iOS/macOS)
+- Talk to **APNs directly** with a `.p8` auth key (iOS/macOS), **FCM** (HTTP v1) for Android, or **Web Push** (VAPID) for browsers
+- Subscribe devices to **topics** and send to a topic
 - Mutate, localize, personalize, or suppress notifications per-device via interceptors
 - Automatically prune expired/invalid device tokens and apply rotated tokens
-- Serve **multiple apps** from one server (keyed APNs registrations)
-- Emit push delivery metrics for OpenTelemetry
+- Serve **multiple apps** from one server (keyed registrations per provider)
+- Emit push delivery metrics + traces for OpenTelemetry
 - Send silent/background (content-available) pushes
 
 > This is the **server** counterpart. For the on-device client (registering for push, receiving), use
@@ -59,7 +71,9 @@ Invoke this skill when the user wants to:
 - **NuGet packages**:
   - `Shiny.Extensions.Push` — core: models, `IPushManager`/`IPushProvider`/`IPushRepository`/`IPushInterceptor`,
     `PushManager` orchestrator, builder/DI, in-memory repository, debug provider, `PushMetrics`
-  - `Shiny.Extensions.Push.Apns` — direct APNs provider (token `.p8` / ES256 over HTTP/2)
+  - `Shiny.Extensions.Push.Apns` — direct APNs provider (token `.p8` / ES256 over HTTP/2), iOS/macOS
+  - `Shiny.Extensions.Push.Fcm` — Firebase Cloud Messaging HTTP v1 (OAuth2 service account), Android
+  - `Shiny.Extensions.Push.WebPush` — Web Push (VAPID + RFC 8291 aes128gcm, BCL crypto only), browsers
   - `Shiny.Extensions.Push.DocumentDb` — `IPushRepository` backed by Shiny.DocumentDb (any provider)
 - **Target**: `net10.0`. AOT/trim-safe.
 
@@ -81,6 +95,17 @@ services.AddPushNotifications(push =>
         o.BundleId = "com.example.app";
         o.PrivateKeyPath = "AuthKey_KEY1234567.p8";   // or o.PrivateKey = "<PEM contents>"
         // o.ForceEnvironment = PushEnvironment.Sandbox;  // default: honour each registration
+    });
+
+    // FCM (Android) — Google service-account JSON
+    push.AddFcm(o => o.ServiceAccountJsonPath = "firebase-service-account.json");
+
+    // Web Push (browsers) — VAPID keys in base64url (web-push format)
+    push.AddWebPush(o =>
+    {
+        o.PublicKey  = "<vapid-public-key>";
+        o.PrivateKey = "<vapid-private-key>";
+        o.Subject    = "mailto:you@example.com";
     });
 
     // Persistence (defaults to in-memory if omitted)
@@ -202,10 +227,46 @@ Providers return a normalized `PushDeliveryStatus`. The manager auto-removes tok
 `TokenExpired`/`InvalidToken` (APNs `410 Unregistered` / `BadDeviceToken`) and applies rotated tokens
 (`PushDeliveryResult.UpdatedToken`) to the repository. Disable via `PushManagerOptions.AutoPruneDeadTokens = false`.
 `RateLimited` is surfaced on the result but **not** retried — backoff is the caller's responsibility.
+On success, providers set `PushDeliveryResult.ProviderMessageId` (APNs `apns-id`, FCM message `name`,
+WebPush `Location`).
+
+## Topics
+
+Topics are server-side subscriptions (work across every provider, independent of FCM-native topics):
+
+```csharp
+await pushManager.SubscribeToTopic(token, DevicePlatform.iOS, "sports");
+await pushManager.SendToTopic("sports", new PushNotification { Title = "Goal!" });
+await pushManager.UnsubscribeFromTopic(token, DevicePlatform.iOS, "sports");
+```
+
+## Platform routing (FCM / Web Push)
+
+The manager routes a registration to the provider that claims its `Platform`: APNs → `iOS`/`MacOS`,
+FCM → `Android`, Web Push → `WebBrowser`. For **Web Push**, the registration's `DeviceToken` is the
+subscription endpoint and the `p256dh`/`auth` keys go in `Data`:
+
+```csharp
+await pushManager.RegisterDevice(new DeviceRegistration
+{
+    DeviceToken = subscription.Endpoint,
+    Platform    = DevicePlatform.WebBrowser,
+    Data        = new Dictionary<string, string>
+    {
+        ["p256dh"] = subscription.Keys.P256dh,
+        ["auth"]   = subscription.Keys.Auth
+    }
+});
+```
+
+FCM uses `AndroidPushOptions` on the notification for `android.notification` fields (channel id, icon,
+color, image). All providers honour the cross-cutting fields (title/body, badge, sound, data, deep link,
+collapse id, TTL, priority).
 
 ## Multiple apps (keyed registration)
 
-Register one keyed APNs provider per app; devices carry the matching `AppId`; the manager routes by it.
+Register one keyed provider per app (works for `AddApns`/`AddFcm`/`AddWebPush`); devices carry the
+matching `AppId`; the manager routes by it.
 
 ```csharp
 services.AddPushNotifications(push =>
@@ -229,8 +290,13 @@ Telemetry is emitted via `System.Diagnostics.Metrics` under the meter `Shiny.Ext
 `push.tokens.pruned`, and histogram `push.send.duration` (ms) — tagged by `platform`, `provider`,
 `status` (never by `BatchId`, which is high-cardinality).
 
+Distributed tracing uses the `ActivitySource` `PushDiagnostics.ActivitySourceName` (same name): a
+`push.send` span per batch and `push.deliver` per device.
+
 ```csharp
-services.AddOpenTelemetry().WithMetrics(m => m.AddMeter(PushMetrics.MeterName));
+services.AddOpenTelemetry()
+    .WithMetrics(m => m.AddMeter(PushMetrics.MeterName))
+    .WithTracing(t => t.AddSource(PushDiagnostics.ActivitySourceName));
 ```
 
 ## Persistence (Shiny.DocumentDb)

@@ -10,7 +10,9 @@
     <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.3" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
     <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.3" />
+    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />
     <PackageVersion Include="Nerdbank.GitVersioning" Version="3.9.50" />
+    <PackageVersion Include="Scalar.AspNetCore" Version="2.16.4" />
     <PackageVersion Include="Shiny.DocumentDb" Version="8.0.0" />
     <PackageVersion Include="Shiny.DocumentDb.Extensions.DependencyInjection" Version="8.0.0" />
   </ItemGroup>

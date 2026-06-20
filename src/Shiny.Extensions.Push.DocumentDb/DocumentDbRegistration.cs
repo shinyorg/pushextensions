@@ -11,8 +11,12 @@ public static class DocumentDbRegistration
     /// Uses a Shiny.DocumentDb-backed repository. Assumes an <see cref="IDocumentStore"/> has already
     /// been registered (e.g. via <c>services.AddDocumentStore(…)</c> with your chosen provider).
     /// </summary>
-    public static IPushBuilder UseDocumentDb(this IPushBuilder builder)
+    public static IPushBuilder UseDocumentDb(this IPushBuilder builder, Action<DocumentDbOptions>? configure = null)
     {
+        builder.Services.AddOptions<DocumentDbOptions>();
+        if (configure != null)
+            builder.Services.Configure(configure);
+
         builder.UseRepository<DocumentDbPushRepository>();
         return builder;
     }
@@ -22,10 +26,9 @@ public static class DocumentDbRegistration
     /// Registers a document store with the supplied options and uses it as the push repository. Set
     /// <see cref="DocumentStoreOptions.DatabaseProvider"/> to pick the backend (SQLite, Postgres, …).
     /// </summary>
-    public static IPushBuilder UseDocumentDb(this IPushBuilder builder, Action<DocumentStoreOptions> configureStore)
+    public static IPushBuilder UseDocumentDb(this IPushBuilder builder, Action<DocumentStoreOptions> configureStore, Action<DocumentDbOptions>? configure = null)
     {
         builder.Services.AddDocumentStore(configureStore);
-        builder.UseRepository<DocumentDbPushRepository>();
-        return builder;
+        return builder.UseDocumentDb(configure);
     }
 }

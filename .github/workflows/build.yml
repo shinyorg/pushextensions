@@ -50,3 +50,29 @@ jobs:
     - name: Publish NuGets
       if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/v') }}
       run: dotnet nuget push "**/*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGETAPIKEY }} --skip-duplicate
+
+
+  # Hardening: native-AOT publish of the smoke test. TreatWarningsAsErrors in the project makes any
+  # trim/AOT (ILxxxx) warning across the libraries fail the build. Then run the native binary.
+  aot-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+          fetch-depth: 0
+
+    - name: Setup .NET 10.0
+      uses: actions/setup-dotnet@v5
+      with:
+          dotnet-version: '10.0.x'
+
+    - name: Install Native AOT prerequisites
+      run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+    - name: Native AOT publish
+      run: dotnet publish samples/AotSmokeTest -c Release -r linux-x64
+
+    - name: Run native binary
+      run: ./samples/AotSmokeTest/bin/Release/net10.0/linux-x64/publish/AotSmokeTest

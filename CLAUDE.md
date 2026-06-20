@@ -20,10 +20,14 @@ dotnet test             # xUnit suite (tests/Shiny.Extensions.Push.Tests)
 
 | Project | Purpose |
 |---|---|
-| `src/Shiny.Extensions.Push` | Core: models, interfaces, `PushManager` orchestrator, builder/DI, in-memory repo, debug provider |
+| `src/Shiny.Extensions.Push` | Core: models, interfaces, `PushManager` orchestrator, builder/DI, in-memory repo, debug provider, metrics, tracing |
 | `src/Shiny.Extensions.Push.Apns` | Direct APNs provider (token-based .p8 / ES256 over HTTP/2) |
+| `src/Shiny.Extensions.Push.Fcm` | Firebase Cloud Messaging HTTP v1 provider (OAuth2 service-account RS256) |
+| `src/Shiny.Extensions.Push.WebPush` | Web Push provider (VAPID + RFC 8291 aes128gcm, BCL crypto only) |
 | `src/Shiny.Extensions.Push.DocumentDb` | `IPushRepository` backed by Shiny.DocumentDb (any provider) |
-| `tests/Shiny.Extensions.Push.Tests` | xUnit tests (manager, metrics, multi-key, JWT, APNs payload, SQLite integration) |
+| `samples/Push.Api` | ASP.NET Core minimal API + Scalar UI (debug provider, in-memory) |
+| `samples/AotSmokeTest` | Native-AOT console exercising core + all 3 providers (CI hardening) |
+| `tests/Shiny.Extensions.Push.Tests` | xUnit tests (manager, metrics, multi-key, topics, tracing, APNs/FCM/WebPush HTTP + crypto, SQLite integration) |
 
 Abstractions currently live *in* the core project (not a separate `.Abstractions`). Providers
 reference the core. **Decision:** keep it one project until a second provider exists and we feel the
@@ -141,18 +145,38 @@ Namespace/package root is `Shiny.Extensions.Push` (this is the server counterpar
 `Shiny.Push`). **Assumption, easily renamed** if you want a different brand — it's a mechanical
 find/replace across `src`, `tests`, csproj `RootNamespace`, and the `.slnx`.
 
+## More decisions
+
+### 11. FCM provider (HTTP v1, OAuth2 service account).
+`Shiny.Extensions.Push.Fcm` claims `Android`. `FcmAccessTokenProvider` builds an RS256 JWT from the
+service-account JSON (parsed with `JsonDocument`, RSA via `ImportFromPem`), exchanges it for a bearer
+token, and caches it (~55 min, `SemaphoreSlim`-guarded). Payload built with `Utf8JsonWriter`
+(`AndroidPushOptions` → `android.notification`). Error mapping: `UNREGISTERED`→TokenExpired,
+`INVALID_ARGUMENT`/`SENDER_ID_MISMATCH`→InvalidToken, `QUOTA_EXCEEDED`/`UNAVAILABLE`→RateLimited.
+Multi-app keyed like APNs. **Native-token-only — FCM-native topic pub/sub is not used** (we fan out via
+the repository for cross-provider consistency).
+
+### 12. WebPush provider (VAPID + RFC 8291, BCL crypto only).
+`Shiny.Extensions.Push.WebPush` claims `WebBrowser`. Encryption (`WebPushCrypto`) is RFC 8291 message
+encryption over the RFC 8188 `aes128gcm` content encoding using only the BCL (`ECDiffieHellman`,
+`HKDF`, `AesGcm`) — **no third-party dependency** — and is verified against the RFC 8291 §5 test vector.
+VAPID (`WebPushVapid`) is an ES256 JWT with keys imported from raw base64url (the standard web-push key
+format). The subscription endpoint is the registration's `DeviceToken`; `p256dh`/`auth` live in `Data`.
+
+### 13. Topics = server-side subscription membership.
+`DeviceRegistration.Topics` + `PushFilter.Topic`. `IPushManager.SubscribeToTopic`/`UnsubscribeFromTopic`/
+`SendToTopic` map to `IPushRepository.Subscribe`/`Unsubscribe` (O(1) point ops) + a topic filter. Modeled
+at the repository layer so it works identically across every provider (not tied to FCM-native topics).
+
+### 14. Tracing via `ActivitySource` + `apns-id` correlation.
+`PushDiagnostics.ActivitySource` ("Shiny.Extensions.Push") emits `push.send` (batch) and `push.deliver`
+(per device) spans; subscribe with `AddSource(PushDiagnostics.ActivitySourceName)`. Providers report a
+`ProviderMessageId` on success (APNs `apns-id` header, FCM message `name`, WebPush `Location`).
+
 ## Roadmap / known gaps (not yet built)
 
-- **FCM provider** (`Shiny.Extensions.Push.Fcm`) — HTTP v1, OAuth2 service account, 500/multicast batching.
-  `AndroidPushOptions` is modelled but unused.
-- **WebPush provider** — VAPID; note WebPush registration is endpoint + p256dh/auth keys (carried in
-  `DeviceRegistration.Data`), not a single token. `WebPushOptions` modelled but unused.
-- **DocumentDb read pushdown** — repository CRUD is done (decision 10), but reads scan + filter in-process.
-  Push UserIdentifier/AppId equality into `store.Query<T>().Where(...)` for large tables.
-- **Topics/subscriptions** — subscribe/unsubscribe device↔topic (FCM topics / provider pub-sub).
-- **Tracing** — metrics are done (decision 8); `Activity`/distributed tracing spans per batch/send are
-  not yet added. Optional delivery-receipt webhooks later.
-- **`apns-id` correlation** — capture APNs' returned `apns-id` into `PushDeliveryResult` for tracing.
+- **DocumentDb read pushdown beyond UserIdentifier/AppId** — tags/topics/platform still filter in-process.
+- **FCM/WebPush native batching** (FCM multicast, parallel WebPush) — currently one request per device.
 - **Outbox/durable queue** — out of scope for v1; the provider/result seams allow adding it later.
 
 ### Explicitly out of scope (decided, not "todo")
@@ -160,9 +184,9 @@ find/replace across `src`, `tests`, csproj `RootNamespace`, and the `.slnx`.
   the library does not retry or honour `Retry-After` itself. (user decision, 2026-06-20)
 
 ### Done since the first cut
-- ✅ **Metrics** (`System.Diagnostics.Metrics` / `IMeterFactory`) — decision 8.
-- ✅ **Multi-app / multi-tenant** via keyed registration + `AppId` — decision 9.
-- ✅ **DocumentDb `IPushRepository`** (any Shiny.DocumentDb provider), SQLite-integration-tested — decision 10.
+- ✅ **Metrics** (decision 8) · **Multi-app keyed** (decision 9) · **DocumentDb repo** (decision 10).
+- ✅ **FCM** (11) · **WebPush** (12) · **Topics** (13) · **Tracing + apns-id** (14) · **DocumentDb read pushdown** (decision 10).
+- ✅ **Sample API + Scalar** (`samples/Push.Api`) and **native-AOT smoke test** (`samples/AotSmokeTest`, CI job `aot-smoke`) — all 3 providers verified AOT-publishable + runnable.
 
 ## CI / GitHub Actions
 
@@ -171,7 +195,9 @@ Two workflows in `.github/workflows/` (brought over from `shinyorg/extensions` a
 - **`build.yml`** — on push to `main`/`dev`/`preview`/`v*` (and manual dispatch). Runs on `ubuntu-latest`
   (pure server libs — no MAUI workload, unlike the extensions repo). Builds `ServerPush.slnx` in Release
   with `PublicRelease=true`, runs the test project, uploads `**/*.nupkg`, and pushes to nuget.org on
-  `main`/`v*`. **Requires repo secret `NUGETAPIKEY`.**
+  `main`/`v*`. **Requires repo secret `NUGETAPIKEY`.** A second job **`aot-smoke`** native-AOT-publishes
+  `samples/AotSmokeTest` (installs clang) and runs the binary — `TreatWarningsAsErrors` there makes any
+  trim/AOT (ILxxxx) regression fail CI.
 - **`sync-skills.yml`** — on push to `main` touching `skills/**` (and manual dispatch). Mirrors this repo's
   `skills/*` into `shinyorg/skills` and opens a PR there. Repo references use `${{ github.repository }}`
   (no hard-coded name). **Requires repo secret `SKILLS_REPO_TOKEN`** (a PAT with write access to

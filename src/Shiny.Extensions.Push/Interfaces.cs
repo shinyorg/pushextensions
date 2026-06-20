@@ -41,6 +41,12 @@ public interface IPushRepository
     /// <summary>Replace a rotated token in place, preserving the rest of the registration.</summary>
     Task UpdateToken(string oldToken, DevicePlatform platform, string newToken, CancellationToken cancellationToken = default);
 
+    /// <summary>Add a topic subscription to a registration (idempotent). No-op if the device is unknown.</summary>
+    Task Subscribe(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default);
+
+    /// <summary>Remove a topic subscription from a registration (idempotent).</summary>
+    Task Unsubscribe(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default);
+
     /// <summary>Materialize all matching registrations. Prefer <see cref="StreamRegistrations"/> for large audiences.</summary>
     Task<IReadOnlyList<DeviceRegistration>> GetRegistrations(PushFilter filter, CancellationToken cancellationToken = default);
 
@@ -79,12 +85,19 @@ public interface IPushManager
     Task RegisterDevice(DeviceRegistration registration, CancellationToken cancellationToken = default);
     Task UnregisterDevice(string deviceToken, DevicePlatform platform, CancellationToken cancellationToken = default);
 
+    /// <summary>Subscribe a device to a topic for later <see cref="SendToTopic"/> fan-out.</summary>
+    Task SubscribeToTopic(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default);
+
+    /// <summary>Unsubscribe a device from a topic.</summary>
+    Task UnsubscribeFromTopic(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default);
+
     /// <summary>Send to everyone matching <paramref name="filter"/>.</summary>
     Task<PushSendResult> Send(PushNotification notification, PushFilter filter, CancellationToken cancellationToken = default);
 
     Task<PushSendResult> SendToUser(string userIdentifier, PushNotification notification, CancellationToken cancellationToken = default);
     Task<PushSendResult> SendToTags(IEnumerable<string> tags, PushNotification notification, TagMatch match = TagMatch.Any, CancellationToken cancellationToken = default);
     Task<PushSendResult> SendToTokens(IEnumerable<string> deviceTokens, PushNotification notification, CancellationToken cancellationToken = default);
+    Task<PushSendResult> SendToTopic(string topic, PushNotification notification, CancellationToken cancellationToken = default);
     Task<PushSendResult> Broadcast(PushNotification notification, CancellationToken cancellationToken = default);
 }
 

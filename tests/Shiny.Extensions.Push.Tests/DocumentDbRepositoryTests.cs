@@ -97,6 +97,20 @@ public sealed class DocumentDbRepositoryTests : IDisposable
 
 
     [Fact]
+    public async Task Topics_SubscribeUnsubscribe_RoundTripsThroughStore()
+    {
+        await this.repo.Save(Reg("a"));
+        await this.repo.Subscribe("a", DevicePlatform.iOS, "news");
+
+        var subscribed = await this.repo.GetRegistrations(new PushFilter { Topic = "news" });
+        Assert.Equal("a", Assert.Single(subscribed).DeviceToken);
+
+        await this.repo.Unsubscribe("a", DevicePlatform.iOS, "news");
+        Assert.Empty(await this.repo.GetRegistrations(new PushFilter { Topic = "news" }));
+    }
+
+
+    [Fact]
     public async Task UpdateToken_RotatesAndPreservesData()
     {
         await this.repo.Save(Reg("old", "u1", "vip"));

@@ -34,6 +34,9 @@ public record PushFilter
     /// <summary>Restrict to a single application/provider key (multi-app servers).</summary>
     public string? AppId { get; init; }
 
+    /// <summary>Target registrations subscribed to this topic.</summary>
+    public string? Topic { get; init; }
+
     /// <summary>A filter that matches every registration.</summary>
     public static PushFilter Broadcast { get; } = new();
 
@@ -52,6 +55,9 @@ public record PushFilter
 
         if (this.AppId is not null &&
             !string.Equals(this.AppId, registration.AppId, StringComparison.Ordinal))
+            return false;
+
+        if (this.Topic is not null && !registration.Topics.Contains(this.Topic))
             return false;
 
         if (this.Platforms is { Count: > 0 } && !this.Platforms.Contains(registration.Platform))

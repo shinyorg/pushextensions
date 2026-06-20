@@ -74,6 +74,38 @@ public sealed class InMemoryPushRepository : IPushRepository
     }
 
 
+    public Task Subscribe(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default)
+    {
+        foreach (var kvp in this.store)
+        {
+            var reg = kvp.Value;
+            if (reg.Platform == platform &&
+                string.Equals(reg.DeviceToken, deviceToken, StringComparison.Ordinal) &&
+                !reg.Topics.Contains(topic))
+            {
+                this.store[kvp.Key] = reg with { Topics = [.. reg.Topics, topic] };
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+
+    public Task Unsubscribe(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default)
+    {
+        foreach (var kvp in this.store)
+        {
+            var reg = kvp.Value;
+            if (reg.Platform == platform &&
+                string.Equals(reg.DeviceToken, deviceToken, StringComparison.Ordinal) &&
+                reg.Topics.Contains(topic))
+            {
+                this.store[kvp.Key] = reg with { Topics = [.. reg.Topics.Where(t => t != topic)] };
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+
     public Task<IReadOnlyList<DeviceRegistration>> GetRegistrations(PushFilter filter, CancellationToken cancellationToken = default)
     {
         IReadOnlyList<DeviceRegistration> matches = this.store.Values

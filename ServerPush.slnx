@@ -1,7 +1,13 @@
 <Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/AotSmokeTest/AotSmokeTest.csproj" />
+    <Project Path="samples/Push.Api/Push.Api.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Shiny.Extensions.Push.Apns/Shiny.Extensions.Push.Apns.csproj" />
     <Project Path="src/Shiny.Extensions.Push.DocumentDb/Shiny.Extensions.Push.DocumentDb.csproj" />
+    <Project Path="src/Shiny.Extensions.Push.Fcm/Shiny.Extensions.Push.Fcm.csproj" />
+    <Project Path="src/Shiny.Extensions.Push.WebPush/Shiny.Extensions.Push.WebPush.csproj" />
     <Project Path="src/Shiny.Extensions.Push/Shiny.Extensions.Push.csproj" />
   </Folder>
   <Folder Name="/tests/">

@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>
@@ -6,24 +6,16 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" />
-    <PackageReference Include="Microsoft.Extensions.Diagnostics.Testing" />
-    <PackageReference Include="Shiny.DocumentDb.Sqlite" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" />
-    <PackageReference Include="xunit" />
-    <PackageReference Include="xunit.runner.visualstudio" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Using Include="Xunit" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Scalar.AspNetCore" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Shiny.Extensions.Push\Shiny.Extensions.Push.csproj" />
     <ProjectReference Include="..\..\src\Shiny.Extensions.Push.Apns\Shiny.Extensions.Push.Apns.csproj" />
-    <ProjectReference Include="..\..\src\Shiny.Extensions.Push.DocumentDb\Shiny.Extensions.Push.DocumentDb.csproj" />
     <ProjectReference Include="..\..\src\Shiny.Extensions.Push.Fcm\Shiny.Extensions.Push.Fcm.csproj" />
     <ProjectReference Include="..\..\src\Shiny.Extensions.Push.WebPush\Shiny.Extensions.Push.WebPush.csproj" />
+    <ProjectReference Include="..\..\src\Shiny.Extensions.Push.DocumentDb\Shiny.Extensions.Push.DocumentDb.csproj" />
   </ItemGroup>
 
 </Project>

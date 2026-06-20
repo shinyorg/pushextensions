@@ -83,7 +83,10 @@ public sealed class ApnsProvider : IPushProvider
 
         using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (response.IsSuccessStatusCode)
-            return PushDeliveryResult.Success(registration);
+        {
+            var apnsId = response.Headers.TryGetValues("apns-id", out var ids) ? ids.FirstOrDefault() : null;
+            return PushDeliveryResult.Success(registration, providerMessageId: apnsId);
+        }
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         var reason = ParseReason(body);

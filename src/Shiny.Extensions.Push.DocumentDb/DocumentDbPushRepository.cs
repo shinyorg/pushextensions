@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization.Metadata;
+using Microsoft.Extensions.Options;
 using Shiny.DocumentDb;
 using Shiny.Extensions.Push;
 
@@ -11,19 +12,24 @@ namespace Shiny.Extensions.Push.DocumentDb;
 /// (SQLite, Postgres, SQL Server, Cosmos, Mongo, …) the host registers as <see cref="IDocumentStore"/>.
 /// </summary>
 /// <remarks>
-/// Write/lookup hot paths (save, remove, token rotation) are O(1) point operations keyed on the
-/// document id <c>{Platform}|{DeviceToken}</c>. Reads (<see cref="GetRegistrations"/> /
-/// <see cref="StreamRegistrations"/>) currently stream the type and evaluate <see cref="PushFilter"/>
-/// in-process — this keeps the repository fully AOT-safe (no JSON-path predicate translation, so no
-/// serializer-naming coupling) and provider-agnostic. Pushing equality clauses (UserIdentifier/AppId)
-/// down into the store query is a future optimization; see CLAUDE.md.
+/// Write/lookup hot paths (save, remove, token rotation, subscribe) are O(1) point operations keyed on
+/// the document id <c>{Platform}|{DeviceToken}</c>. Reads optionally push equality on
+/// <c>UserIdentifier</c>/<c>AppId</c> into the store query (see <see cref="DocumentDbOptions"/>), then
+/// evaluate the remaining <see cref="PushFilter"/> clauses in-process — keeping the repository AOT-safe
+/// and provider-agnostic. See CLAUDE.md decision 10.
 /// </remarks>
 public sealed class DocumentDbPushRepository : IPushRepository
 {
     static readonly JsonTypeInfo<PushRegistrationDocument> TypeInfo = PushDocumentJsonContext.Default.PushRegistrationDocument;
 
     readonly IDocumentStore store;
-    public DocumentDbPushRepository(IDocumentStore store) => this.store = store;
+    readonly DocumentDbOptions options;
+
+    public DocumentDbPushRepository(IDocumentStore store, IOptions<DocumentDbOptions> options)
+    {
+        this.store = store;
+        this.options = options.Value;
+    }
 
 
     public Task Save(DeviceRegistration registration, CancellationToken cancellationToken = default)
@@ -48,6 +54,29 @@ public sealed class DocumentDbPushRepository : IPushRepository
     }
 
 
+    public async Task Subscribe(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default)
+    {
+        var id = PushRegistrationDocument.BuildId(platform, deviceToken);
+        var doc = await this.store.Get<PushRegistrationDocument>(id, TypeInfo).ConfigureAwait(false);
+        if (doc == null || doc.Topics.Contains(topic))
+            return;
+
+        doc.Topics.Add(topic);
+        await this.store.Upsert(doc, TypeInfo).ConfigureAwait(false);
+    }
+
+
+    public async Task Unsubscribe(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default)
+    {
+        var id = PushRegistrationDocument.BuildId(platform, deviceToken);
+        var doc = await this.store.Get<PushRegistrationDocument>(id, TypeInfo).ConfigureAwait(false);
+        if (doc == null || !doc.Topics.Remove(topic))
+            return;
+
+        await this.store.Upsert(doc, TypeInfo).ConfigureAwait(false);
+    }
+
+
     public async Task<IReadOnlyList<DeviceRegistration>> GetRegistrations(PushFilter filter, CancellationToken cancellationToken = default)
     {
         var results = new List<DeviceRegistration>();
@@ -61,8 +90,19 @@ public sealed class DocumentDbPushRepository : IPushRepository
         PushFilter filter,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var query = this.store.Query<PushRegistrationDocument>(TypeInfo).ToAsyncEnumerable();
-        await foreach (var doc in query.WithCancellation(cancellationToken).ConfigureAwait(false))
+        var query = this.store.Query<PushRegistrationDocument>(TypeInfo);
+
+        // Push down the high-value, translation-safe scalar equalities; the rest is applied in-process.
+        if (this.options.QueryPushdown)
+        {
+            if (filter.UserIdentifier is { } user)
+                query = query.Where(d => d.UserIdentifier == user);
+
+            if (filter.AppId is { } appId)
+                query = query.Where(d => d.AppId == appId);
+        }
+
+        await foreach (var doc in query.ToAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             var reg = doc.ToRegistration();
             if (filter.Matches(reg))

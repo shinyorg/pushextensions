@@ -20,13 +20,19 @@ public record PushDeliveryResult
     /// <summary>Provider-specific reason code/string (e.g. APNs "BadDeviceToken"). Useful for logging.</summary>
     public string? Reason { get; init; }
 
+    /// <summary>
+    /// Provider-assigned message identifier for the accepted push (APNs <c>apns-id</c>, FCM message
+    /// <c>name</c>). Useful for correlation/receipts. Null on failure or when the provider returns none.
+    /// </summary>
+    public string? ProviderMessageId { get; init; }
+
     /// <summary>The transport exception, when the failure was an exception rather than a status.</summary>
     public Exception? Error { get; init; }
 
     public bool IsSuccess => this.Status == PushDeliveryStatus.Success;
 
-    public static PushDeliveryResult Success(DeviceRegistration r, string? updatedToken = null) =>
-        new() { DeviceToken = r.DeviceToken, Platform = r.Platform, Status = PushDeliveryStatus.Success, UpdatedToken = updatedToken };
+    public static PushDeliveryResult Success(DeviceRegistration r, string? updatedToken = null, string? providerMessageId = null) =>
+        new() { DeviceToken = r.DeviceToken, Platform = r.Platform, Status = PushDeliveryStatus.Success, UpdatedToken = updatedToken, ProviderMessageId = providerMessageId };
 
     public static PushDeliveryResult Failed(DeviceRegistration r, PushDeliveryStatus status, string? reason = null, Exception? error = null) =>
         new() { DeviceToken = r.DeviceToken, Platform = r.Platform, Status = status, Reason = reason, Error = error };

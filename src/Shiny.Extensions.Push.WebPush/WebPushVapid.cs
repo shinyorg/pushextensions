@@ -1,0 +1,60 @@
+using System.Buffers.Text;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace Shiny.Extensions.Push.WebPush;
+
+
+/// <summary>
+/// VAPID (RFC 8292) application-server authentication. Holds the P-256 signing key (imported from raw
+/// base64url, the standard web-push key format) and produces the per-origin <c>Authorization: vapid</c>
+/// header value. AOT-safe: manual ES256 JWT, no PEM/IdentityModel.
+/// </summary>
+public sealed class WebPushVapid : IDisposable
+{
+    readonly ECDsa key;
+    readonly string publicKeyB64;
+    readonly string subject;
+
+
+    public WebPushVapid(string publicKeyBase64Url, string privateKeyBase64Url, string subject)
+    {
+        this.publicKeyB64 = publicKeyBase64Url;
+        this.subject = subject;
+
+        var pub = Base64Url.DecodeFromChars(publicKeyBase64Url);   // 65-byte uncompressed point
+        var d = Base64Url.DecodeFromChars(privateKeyBase64Url);    // 32-byte scalar
+        this.key = ECDsa.Create(new ECParameters
+        {
+            Curve = ECCurve.NamedCurves.nistP256,
+            D = d,
+            Q = new ECPoint { X = pub[1..33], Y = pub[33..65] }
+        });
+    }
+
+
+    /// <summary>Builds the <c>Authorization</c> header value for the given push endpoint origin.</summary>
+    public string CreateAuthorizationHeader(Uri endpoint, DateTimeOffset now)
+    {
+        var aud = $"{endpoint.Scheme}://{endpoint.Authority}";
+        var exp = now.AddHours(12).ToUnixTimeSeconds();   // RFC 8292: <= 24h
+
+        var header = """{"typ":"JWT","alg":"ES256"}""";
+        var payload = $"{{\"aud\":\"{aud}\",\"exp\":{exp},\"sub\":\"{this.subject}\"}}";
+
+        var signingInput = $"{Encode(Encoding.UTF8.GetBytes(header))}.{Encode(Encoding.UTF8.GetBytes(payload))}";
+        var signature = this.key.SignData(
+            Encoding.ASCII.GetBytes(signingInput),
+            HashAlgorithmName.SHA256,
+            DSASignatureFormat.IeeeP1363FixedFieldConcatenation
+        );
+        var jwt = $"{signingInput}.{Encode(signature)}";
+
+        return $"vapid t={jwt}, k={this.publicKeyB64}";
+    }
+
+
+    static string Encode(ReadOnlySpan<byte> bytes) => Base64Url.EncodeToString(bytes);
+
+    public void Dispose() => this.key.Dispose();
+}
