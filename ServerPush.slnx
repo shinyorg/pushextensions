@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Shiny.Extensions.Push.Apns/Shiny.Extensions.Push.Apns.csproj" />
+    <Project Path="src/Shiny.Extensions.Push.DocumentDb/Shiny.Extensions.Push.DocumentDb.csproj" />
+    <Project Path="src/Shiny.Extensions.Push/Shiny.Extensions.Push.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Shiny.Extensions.Push.Tests/Shiny.Extensions.Push.Tests.csproj" />
+  </Folder>
+</Solution>

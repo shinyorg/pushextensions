@@ -1,0 +1,8 @@
+<Project>
+
+  <!-- Versioning for all projects (src + tests). Drives package versions and PublicRelease. -->
+  <ItemGroup>
+    <PackageReference Include="Nerdbank.GitVersioning" PrivateAssets="All" />
+  </ItemGroup>
+
+</Project>
