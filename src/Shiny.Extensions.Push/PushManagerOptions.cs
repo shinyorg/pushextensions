@@ -16,4 +16,13 @@ public class PushManagerOptions
     /// repository automatically. Turn off if you want to manage pruning yourself via an interceptor.
     /// </summary>
     public bool AutoPruneDeadTokens { get; set; } = true;
+
+    /// <summary>
+    /// When true (default), the manager hands groups of devices to providers that implement
+    /// <see cref="IPushBatchProvider"/> in a single batched call (e.g. FCM multicast) instead of one
+    /// request per device. Devices are grouped per provider by the identical notification instance, so an
+    /// interceptor that replaces the notification per device naturally falls back to per-device sends.
+    /// Turn off to force per-device delivery for every provider.
+    /// </summary>
+    public bool EnableBatching { get; set; } = true;
 }

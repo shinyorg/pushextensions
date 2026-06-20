@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -9,12 +10,17 @@ namespace Shiny.Extensions.Push.Fcm;
 
 
 /// <summary>
-/// Delivers to Android devices via Firebase Cloud Messaging (HTTP v1). OAuth2 service-account auth; one
-/// HTTP/1.1+ request per device with a cached bearer token. AOT-safe.
+/// Delivers to Android devices via Firebase Cloud Messaging (HTTP v1). OAuth2 service-account auth with a
+/// cached bearer token. Single sends hit <c>messages:send</c>; the manager can also batch up to
+/// <see cref="MaxBatchSize"/> devices into one multipart <c>/batch</c> request (FCM multicast). AOT-safe.
 /// </summary>
-public sealed class FcmProvider : IPushProvider
+public sealed class FcmProvider : IPushProvider, IPushBatchProvider
 {
     public const string HttpClientName = "shiny-fcm";
+
+    // FCM HTTP v1 caps a multipart batch at 500 sub-requests.
+    const int BatchLimit = 500;
+    const string BatchBoundary = "shiny_push_fcm_batch";
 
     readonly string appKey;
     readonly IHttpClientFactory httpClientFactory;
@@ -37,6 +43,8 @@ public sealed class FcmProvider : IPushProvider
 
 
     public string Identifier => this.appKey.Length == 0 ? "fcm" : $"fcm:{this.appKey}";
+
+    public int MaxBatchSize => BatchLimit;
 
     public bool CanDeliver(DeviceRegistration registration)
         => registration.Platform == DevicePlatform.Android
@@ -64,6 +72,67 @@ public sealed class FcmProvider : IPushProvider
 
         var errorCode = ParseErrorCode(body);
         return this.MapFailure(registration, response.StatusCode, errorCode);
+    }
+
+
+    /// <summary>
+    /// Delivers to many devices in a single multipart <c>/batch</c> request (FCM multicast). Each device
+    /// gets its own <c>messages:send</c> sub-request, so per-device outcomes (dead tokens, rotated ids) are
+    /// preserved. Results are returned in the same order as <paramref name="registrations"/>.
+    /// </summary>
+    public async Task<IReadOnlyList<PushDeliveryResult>> SendBatch(PushNotification notification, IReadOnlyList<DeviceRegistration> registrations, CancellationToken cancellationToken = default)
+    {
+        if (registrations.Count == 0)
+            return [];
+
+        // A single device isn't worth the multipart envelope — use the normal endpoint.
+        if (registrations.Count == 1)
+            return [await this.Send(notification, registrations[0], cancellationToken).ConfigureAwait(false)];
+
+        var accessToken = await this.tokenProvider.GetAccessToken(cancellationToken).ConfigureAwait(false);
+        var path = $"/v1/projects/{this.tokenProvider.ProjectId}/messages:send";
+
+        var sb = new StringBuilder();
+        for (var i = 0; i < registrations.Count; i++)
+        {
+            var json = Encoding.UTF8.GetString(FcmPayloadBuilder.Build(notification, registrations[i].DeviceToken));
+            sb.Append("--").Append(BatchBoundary).Append("\r\n");
+            sb.Append("Content-Type: application/http\r\n");
+            sb.Append("Content-Transfer-Encoding: binary\r\n");
+            sb.Append("Content-ID: ").Append(i + 1).Append("\r\n\r\n");
+            sb.Append("POST ").Append(path).Append("\r\n");
+            sb.Append("Content-Type: application/json\r\n\r\n");
+            sb.Append(json).Append("\r\n");
+        }
+        sb.Append("--").Append(BatchBoundary).Append("--\r\n");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://fcm.googleapis.com/batch");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new StringContent(sb.ToString());
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue("multipart/mixed")
+        {
+            Parameters = { new NameValueHeaderValue("boundary", BatchBoundary) }
+        };
+
+        var client = this.httpClientFactory.CreateClient(HttpClientName);
+        using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+        // A non-2xx on the batch envelope itself (auth, malformed request) fails every device uniformly.
+        if (!response.IsSuccessStatusCode)
+        {
+            this.logger.LogWarning("FCM batch request failed: {Status}", response.StatusCode);
+            var errorCode = ParseErrorCode(body);
+            var failed = new List<PushDeliveryResult>(registrations.Count);
+            foreach (var registration in registrations)
+                failed.Add(this.MapFailure(registration, response.StatusCode, errorCode));
+            return failed;
+        }
+
+        var responseBoundary = response.Content.Headers.ContentType?.Parameters
+            .FirstOrDefault(p => string.Equals(p.Name, "boundary", StringComparison.OrdinalIgnoreCase))?.Value?.Trim('"');
+
+        return this.ParseBatchResponse(body, responseBoundary, registrations);
     }
 
 
@@ -130,4 +199,68 @@ public sealed class FcmProvider : IPushProvider
         }
         catch (JsonException) { return null; }
     }
+
+
+    // Splits the multipart/mixed batch response into its sub-responses (one per device, in request order)
+    // and maps each back to a delivery result. Missing/extra parts are padded/truncated to one-per-device.
+    List<PushDeliveryResult> ParseBatchResponse(string body, string? boundary, IReadOnlyList<DeviceRegistration> registrations)
+    {
+        var results = new List<PushDeliveryResult>(registrations.Count);
+
+        if (!string.IsNullOrEmpty(boundary))
+        {
+            var normalized = body.Replace("\r\n", "\n");
+            var segments = normalized.Split("--" + boundary);
+            foreach (var segment in segments)
+            {
+                if (results.Count >= registrations.Count)
+                    break;
+
+                var part = segment.TrimStart('\n', ' ', '\t');
+                if (part.Length == 0 || part.StartsWith("--", StringComparison.Ordinal)) // preamble or closing delimiter
+                    continue;
+                if (!part.Contains("HTTP/", StringComparison.Ordinal)) // not an application/http part
+                    continue;
+
+                var (status, json) = ExtractHttpPart(part);
+                results.Add(this.MapBatchPart(registrations[results.Count], status, json));
+            }
+        }
+        else
+        {
+            this.logger.LogWarning("FCM batch response had no multipart boundary; failing the batch");
+        }
+
+        // If the server returned fewer parts than we sent, fail the remainder rather than silently dropping.
+        while (results.Count < registrations.Count)
+            results.Add(PushDeliveryResult.Failed(registrations[results.Count], PushDeliveryStatus.Error, "missing batch response part"));
+
+        return results;
+    }
+
+
+    // A part is: "<part headers>\n\nHTTP/1.1 <code> <reason>\n<inner headers>\n\n<json>" (CRLF already
+    // normalized to LF). Pull out the inner status code and JSON body.
+    static (HttpStatusCode Status, string Json) ExtractHttpPart(string part)
+    {
+        var afterPartHeaders = part.IndexOf("\n\n", StringComparison.Ordinal);
+        var inner = afterPartHeaders >= 0 ? part[(afterPartHeaders + 2)..] : part;
+
+        var statusCode = HttpStatusCode.OK;
+        var statusLineEnd = inner.IndexOf('\n');
+        var statusLine = statusLineEnd >= 0 ? inner[..statusLineEnd] : inner;
+        var tokens = statusLine.Split(' ');
+        if (tokens.Length >= 2 && int.TryParse(tokens[1], out var code))
+            statusCode = (HttpStatusCode)code;
+
+        var bodyStart = inner.IndexOf("\n\n", StringComparison.Ordinal);
+        var json = bodyStart >= 0 ? inner[(bodyStart + 2)..].Trim() : string.Empty;
+        return (statusCode, json);
+    }
+
+
+    PushDeliveryResult MapBatchPart(DeviceRegistration registration, HttpStatusCode status, string json)
+        => (int)status is >= 200 and < 300
+            ? PushDeliveryResult.Success(registration, providerMessageId: ParseName(json))
+            : this.MapFailure(registration, status, ParseErrorCode(json));
 }

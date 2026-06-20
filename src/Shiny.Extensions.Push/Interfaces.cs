@@ -23,6 +23,31 @@ public interface IPushProvider
 
 
 /// <summary>
+/// An optional capability for transports that can deliver one notification to many devices in a single
+/// operation (e.g. FCM's multipart <c>/batch</c> endpoint). When batching is enabled
+/// (<see cref="PushManagerOptions.EnableBatching"/>) the manager groups devices that share the same
+/// (post-interceptor) notification and hands each group to <see cref="SendBatch"/> instead of calling
+/// <see cref="IPushProvider.Send"/> per device. Implementations must be thread-safe.
+/// </summary>
+public interface IPushBatchProvider : IPushProvider
+{
+    /// <summary>
+    /// The maximum number of registrations accepted per <see cref="SendBatch"/> call. The manager splits
+    /// larger groups into batches of this size. Must be ≥ 1 (FCM HTTP v1 caps a batch at 500).
+    /// </summary>
+    int MaxBatchSize { get; }
+
+    /// <summary>
+    /// Deliver one notification to a batch of devices. Returns exactly one result per registration, in the
+    /// same order as <paramref name="registrations"/>. A whole-batch transport failure should be surfaced
+    /// as one failed result per registration rather than thrown — the manager treats a thrown exception or
+    /// a count mismatch as a failure of the entire batch.
+    /// </summary>
+    Task<IReadOnlyList<PushDeliveryResult>> SendBatch(PushNotification notification, IReadOnlyList<DeviceRegistration> registrations, CancellationToken cancellationToken = default);
+}
+
+
+/// <summary>
 /// Persistence for device registrations. Implementations must be safe for concurrent reads/writes
 /// (the manager prunes/updates tokens while iterating). The default in-memory implementation and a
 /// DocumentDB implementation both satisfy this.

@@ -51,6 +51,43 @@ public sealed class KeyedTestProvider : IPushProvider
 }
 
 
+/// <summary>
+/// An Android provider that supports batching. Records the size of each <see cref="SendBatch"/> call and
+/// how many single <see cref="Send"/> calls it received, so tests can assert which path the manager took.
+/// </summary>
+public sealed class FakeBatchProvider : IPushBatchProvider
+{
+    public int MaxBatchSize { get; set; } = 500;
+    public ConcurrentBag<int> BatchSizes { get; } = [];
+    public int SingleSends;
+    public HashSet<string> ExpireTokens { get; } = new(StringComparer.Ordinal);
+    public ConcurrentBag<string?> TitlesSeen { get; } = [];
+
+    public string Identifier => "fakebatch";
+    public bool CanDeliver(DeviceRegistration registration) => registration.Platform == DevicePlatform.Android;
+
+    public Task<PushDeliveryResult> Send(PushNotification notification, DeviceRegistration registration, CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref this.SingleSends);
+        this.TitlesSeen.Add(notification.Title);
+        return Task.FromResult(this.Result(registration));
+    }
+
+    public Task<IReadOnlyList<PushDeliveryResult>> SendBatch(PushNotification notification, IReadOnlyList<DeviceRegistration> registrations, CancellationToken cancellationToken = default)
+    {
+        this.BatchSizes.Add(registrations.Count);
+        this.TitlesSeen.Add(notification.Title);
+        IReadOnlyList<PushDeliveryResult> results = registrations.Select(this.Result).ToList();
+        return Task.FromResult(results);
+    }
+
+    PushDeliveryResult Result(DeviceRegistration registration)
+        => this.ExpireTokens.Contains(registration.DeviceToken)
+            ? PushDeliveryResult.Failed(registration, PushDeliveryStatus.TokenExpired, "Unregistered")
+            : PushDeliveryResult.Success(registration);
+}
+
+
 /// <summary>Skips the device whose token is "skipme" and rewrites the title of everything else.</summary>
 public sealed class SkipAndRewriteInterceptor : IPushInterceptor
 {

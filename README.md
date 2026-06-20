@@ -1,9 +1,9 @@
 # Shiny.Extensions.Push
 
 Server-side push notification dispatch for .NET. Provider-agnostic core with transports for **APNs**
-(direct, `.p8`/ES256 over HTTP/2), **FCM** (HTTP v1) and **Web Push** (VAPID + RFC 8291). Structured
-targeting, topics, interceptors, dead-token pruning, multi-app keyed registration, metrics + tracing.
-AOT/trim friendly (verified by a native-AOT smoke test).
+(direct, `.p8`/ES256 over HTTP/2), **FCM** (HTTP v1, with multicast batching) and **Web Push** (VAPID +
+RFC 8291). Structured targeting, topics, interceptors, dead-token pruning, multi-app keyed registration,
+metrics + tracing. AOT/trim friendly (verified by a native-AOT smoke test).
 
 See [`samples/Push.Api`](./samples/Push.Api) for a runnable ASP.NET Core API with a Scalar UI.
 
@@ -182,6 +182,12 @@ new PushNotification
 Dead tokens (APNs `410 Unregistered` / `BadDeviceToken`) are pruned automatically; rotated tokens are
 applied back to the repository.
 
+**Batching (FCM multicast):** when a provider supports it, devices that share the same notification are
+delivered in one transport call (FCM packs up to 500 into a multipart `/batch` request) instead of one
+request per device — automatic for broadcasts and topic fan-out, no call-site change. Per-device pruning,
+rotation, and `OnSent`/`OnFailed` are preserved. Disable with `push.Configure(m => m.EnableBatching = false)`;
+make a custom transport batchable by implementing `IPushBatchProvider`.
+
 ## Multiple apps (multi-keyed)
 
 Register one keyed APNs provider per app. Devices carry the matching `AppId`; the manager routes by it.
@@ -240,7 +246,8 @@ Metrics via `System.Diagnostics.Metrics` under the meter **`Shiny.Extensions.Pus
 (`PushMetrics.MeterName`): counters `push.notifications.sent` / `.failed` / `.skipped`,
 `push.tokens.pruned`, and histogram `push.send.duration` (ms) — tagged by `platform`, `provider`,
 `status`. Distributed tracing via the `ActivitySource` of the same name (`push.send` batch span +
-`push.deliver` per-device span). Wire both into OpenTelemetry:
+`push.deliver` per-device span, or one `push.deliver.batch` span for a batched send). Wire both into
+OpenTelemetry:
 
 ```csharp
 services.AddOpenTelemetry()

@@ -95,7 +95,9 @@ caught and logged — they never break a batch.
 ### 7. Rich payloads: neutral core + per-platform escape hatches.
 `PushNotification` carries cross-cutting fields (title/body nullable for silent pushes, badge, sound,
 collapse id, TTL, priority, data, deep link) plus `Apple`/`Android`/`WebPush` option objects for
-native-only features. Only `ApplePushOptions` is wired up today.
+native-only features. **All three are wired up:** `ApplePushOptions`→APNs (category, thread-id, subtitle,
+mutable/content-available, topic & push-type overrides), `AndroidPushOptions`→FCM `android.notification`
+(channel id, icon, color, big-picture image), `WebPushOptions`→WebPush (icon in payload, urgency header).
 
 ### 8. Metrics via `System.Diagnostics.Metrics` (`IMeterFactory`). (user decision, 2026-06-20)
 `PushMetrics` (meter name `Shiny.Extensions.Push`) emits counters `push.notifications.sent` /
@@ -155,6 +157,10 @@ token, and caches it (~55 min, `SemaphoreSlim`-guarded). Payload built with `Utf
 `INVALID_ARGUMENT`/`SENDER_ID_MISMATCH`→InvalidToken, `QUOTA_EXCEEDED`/`UNAVAILABLE`→RateLimited.
 Multi-app keyed like APNs. **Native-token-only — FCM-native topic pub/sub is not used** (we fan out via
 the repository for cross-provider consistency).
+- **FCM multicast (decision 15).** `FcmProvider` also implements `IPushBatchProvider` (`MaxBatchSize` 500):
+  `SendBatch` packs up to 500 `messages:send` sub-requests into one multipart `/batch` request and parses
+  the multipart/mixed response back to per-device results (so dead-token pruning / id rotation still work).
+  A single-device batch short-circuits to the normal endpoint.
 
 ### 12. WebPush provider (VAPID + RFC 8291, BCL crypto only).
 `Shiny.Extensions.Push.WebPush` claims `WebBrowser`. Encryption (`WebPushCrypto`) is RFC 8291 message
@@ -172,11 +178,31 @@ at the repository layer so it works identically across every provider (not tied 
 `PushDiagnostics.ActivitySource` ("Shiny.Extensions.Push") emits `push.send` (batch) and `push.deliver`
 (per device) spans; subscribe with `AddSource(PushDiagnostics.ActivitySourceName)`. Providers report a
 `ProviderMessageId` on success (APNs `apns-id` header, FCM message `name`, WebPush `Location`).
+Batched sends emit one `push.deliver.batch` span (with a `push.batch_size` tag) instead of per-device spans.
+
+### 15. Provider-side batching via `IPushBatchProvider`. (decision — "FCM multicast")
+An **optional** capability a provider implements when it can deliver one notification to many devices in a
+single transport op (`MaxBatchSize` + `SendBatch`). When `PushManagerOptions.EnableBatching` (default on)
+and at least one registered provider implements it, the manager switches from per-device streaming to a
+**chunked** path: it buffers the stream one chunk at a time (chunk size = max provider `MaxBatchSize`, so
+broadcasts still never load the whole table), runs provider-selection + interceptors per device, then
+**groups batch-capable devices by the identical (post-interceptor) notification instance** and hands each
+group (sliced to `MaxBatchSize`) to `SendBatch`. Anything else (non-batch providers, no-provider/skip, and
+solitary devices) falls back to the per-device path.
+- **Grouping is by reference identity of the notification object** — the common broadcast/topic case shares
+  one instance and batches optimally; an interceptor that replaces the notification per device (localization)
+  yields distinct instances and naturally degrades to per-device sends. Predictable + AOT-safe (no value
+  equality over the `Data` dictionary).
+- Per-device dead-token pruning, token rotation, metrics, and `OnSent`/`OnFailed` fan-out are unchanged —
+  `SendBatch` returns one result per registration (same order) and the manager handles each individually.
+- A thrown `SendBatch` or a result-count mismatch fails the whole batch (one `Error` per device); a non-2xx
+  on the batch envelope itself maps every device uniformly.
 
 ## Roadmap / known gaps (not yet built)
 
 - **DocumentDb read pushdown beyond UserIdentifier/AppId** — tags/topics/platform still filter in-process.
-- **FCM/WebPush native batching** (FCM multicast, parallel WebPush) — currently one request per device.
+- **WebPush native batching** — WebPush has no multicast endpoint; still one request per device (the manager
+  already fans these out with bounded concurrency). FCM multicast is done (decision 15).
 - **Outbox/durable queue** — out of scope for v1; the provider/result seams allow adding it later.
 
 ### Explicitly out of scope (decided, not "todo")
@@ -186,6 +212,7 @@ at the repository layer so it works identically across every provider (not tied 
 ### Done since the first cut
 - ✅ **Metrics** (decision 8) · **Multi-app keyed** (decision 9) · **DocumentDb repo** (decision 10).
 - ✅ **FCM** (11) · **WebPush** (12) · **Topics** (13) · **Tracing + apns-id** (14) · **DocumentDb read pushdown** (decision 10).
+- ✅ **FCM multicast / provider batching** (decision 15, `IPushBatchProvider`).
 - ✅ **Sample API + Scalar** (`samples/Push.Api`) and **native-AOT smoke test** (`samples/AotSmokeTest`, CI job `aot-smoke`) — all 3 providers verified AOT-publishable + runnable.
 
 ## CI / GitHub Actions

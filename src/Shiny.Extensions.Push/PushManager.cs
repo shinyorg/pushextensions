@@ -85,15 +85,23 @@ public class PushManager : IPushManager
             CancellationToken = cancellationToken
         };
 
-        await Parallel.ForEachAsync(
-            this.repository.StreamRegistrations(filter, cancellationToken),
-            parallelOptions,
-            async (registration, ct) =>
-            {
-                var result = await this.DeliverOne(batchId, notification, registration, ct).ConfigureAwait(false);
-                results.Add(result);
-            }
-        ).ConfigureAwait(false);
+        var canBatch = this.options.EnableBatching && this.providers.Any(p => p is IPushBatchProvider);
+        if (canBatch)
+        {
+            await this.SendChunked(batchId, notification, filter, results, parallelOptions, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await Parallel.ForEachAsync(
+                this.repository.StreamRegistrations(filter, cancellationToken),
+                parallelOptions,
+                async (registration, ct) =>
+                {
+                    var result = await this.DeliverOne(batchId, notification, registration, ct).ConfigureAwait(false);
+                    results.Add(result);
+                }
+            ).ConfigureAwait(false);
+        }
 
         var sendResult = new PushSendResult { BatchId = batchId, Results = results.ToList() };
 
@@ -111,50 +119,29 @@ public class PushManager : IPushManager
     }
 
 
+    // Per-device fast path (used when no provider supports batching). Behaviour is unchanged: one
+    // push.deliver span covering provider selection, interceptors, send, and result handling.
     async Task<PushDeliveryResult> DeliverOne(Guid batchId, PushNotification notification, DeviceRegistration registration, CancellationToken ct)
     {
         using var activity = PushDiagnostics.Source.StartActivity("push.deliver");
         activity?.SetTag("push.platform", registration.Platform.ToString());
 
-        var provider = this.providers.FirstOrDefault(p => p.CanDeliver(registration));
+        var provider = this.SelectProvider(registration);
         if (provider == null)
         {
-            this.logger.LogWarning("No provider can deliver to platform {Platform} (token {Token})", registration.Platform, Mask(registration.DeviceToken));
-            this.metrics.RecordNoProvider(registration.Platform);
-            activity?.SetStatus(ActivityStatusCode.Error, "no provider");
+            this.RecordNoProvider(registration, activity);
             return PushDeliveryResult.Failed(registration, PushDeliveryStatus.NoProvider, "no provider for platform");
         }
         activity?.SetTag("push.provider", provider.Identifier);
 
         var context = new PushSendContext(batchId, registration, notification);
-
-        // Interceptor pipeline: any Skip short-circuits.
-        foreach (var interceptor in this.interceptors)
+        if (await this.RunBeforeSend(context, provider, ct).ConfigureAwait(false))
         {
-            var decision = await interceptor.BeforeSend(context, ct).ConfigureAwait(false);
-            if (decision.Decision == InterceptorDecision.Skip)
-            {
-                this.metrics.RecordSkipped(registration.Platform, provider.Identifier);
-                activity?.SetTag("push.status", nameof(PushDeliveryStatus.Skipped));
-                return PushDeliveryResult.Failed(registration, PushDeliveryStatus.Skipped);
-            }
+            activity?.SetTag("push.status", nameof(PushDeliveryStatus.Skipped));
+            return PushDeliveryResult.Failed(registration, PushDeliveryStatus.Skipped);
         }
 
-        var startedAt = Stopwatch.GetTimestamp();
-        PushDeliveryResult result;
-        try
-        {
-            result = await provider.Send(context.Notification, registration, ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            result = PushDeliveryResult.Failed(registration, PushDeliveryStatus.Error, ex.Message, ex);
-        }
-        var elapsedMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+        var (result, elapsedMs) = await this.InvokeSend(provider, context, ct).ConfigureAwait(false);
 
         activity?.SetTag("push.status", result.Status.ToString());
         if (!result.IsSuccess)
@@ -163,6 +150,240 @@ public class PushManager : IPushManager
         await this.HandleResult(context, result, provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
         return result;
     }
+
+
+    // Batching path: buffer the stream into chunks (bounded by the largest provider batch size), prepare
+    // each chunk through provider-selection + interceptors, then deliver batchable groups in one call and
+    // anything else per device. Buffering is bounded to one chunk, so broadcasts still don't load the table.
+    async Task SendChunked(Guid batchId, PushNotification notification, PushFilter filter, ConcurrentBag<PushDeliveryResult> results, ParallelOptions parallelOptions, CancellationToken ct)
+    {
+        var chunkSize = Math.Max(
+            parallelOptions.MaxDegreeOfParallelism,
+            this.providers.OfType<IPushBatchProvider>().Max(p => Math.Max(1, p.MaxBatchSize))
+        );
+
+        var buffer = new List<DeviceRegistration>(chunkSize);
+        await foreach (var registration in this.repository.StreamRegistrations(filter, ct).WithCancellation(ct).ConfigureAwait(false))
+        {
+            buffer.Add(registration);
+            if (buffer.Count >= chunkSize)
+            {
+                await this.ProcessChunk(batchId, notification, buffer, results, parallelOptions, ct).ConfigureAwait(false);
+                buffer.Clear();
+            }
+        }
+        if (buffer.Count > 0)
+            await this.ProcessChunk(batchId, notification, buffer, results, parallelOptions, ct).ConfigureAwait(false);
+    }
+
+
+    async Task ProcessChunk(Guid batchId, PushNotification notification, IReadOnlyList<DeviceRegistration> chunk, ConcurrentBag<PushDeliveryResult> results, ParallelOptions parallelOptions, CancellationToken ct)
+    {
+        // 1. Select provider + run interceptors for each device concurrently. Skips/no-provider resolve here.
+        var prepared = new ConcurrentBag<Prepared>();
+        await Parallel.ForEachAsync(chunk, parallelOptions, async (registration, c) =>
+        {
+            var (item, early) = await this.Prepare(batchId, notification, registration, c).ConfigureAwait(false);
+            if (early is not null)
+                results.Add(early);
+            else if (item is { } value)
+                prepared.Add(value);
+        }).ConfigureAwait(false);
+
+        // 2. Partition into per-device singles and per-batch-provider groups.
+        var singles = new List<Prepared>();
+        var byBatchProvider = new Dictionary<IPushBatchProvider, List<Prepared>>();
+        foreach (var p in prepared)
+        {
+            if (p.Provider is IPushBatchProvider bp)
+            {
+                if (!byBatchProvider.TryGetValue(bp, out var list))
+                    byBatchProvider[bp] = list = new List<Prepared>();
+                list.Add(p);
+            }
+            else
+            {
+                singles.Add(p);
+            }
+        }
+
+        // 3. Cluster each provider's devices by the identical notification instance, then slice by batch size.
+        //    A solitary device (e.g. a per-device localized notification) degrades to a normal per-device send.
+        var slices = new List<(IPushBatchProvider Provider, List<Prepared> Items)>();
+        foreach (var (provider, items) in byBatchProvider)
+        {
+            var clusters = new Dictionary<object, List<Prepared>>(ReferenceEqualityComparer.Instance);
+            foreach (var item in items)
+            {
+                if (!clusters.TryGetValue(item.Context.Notification, out var list))
+                    clusters[item.Context.Notification] = list = new List<Prepared>();
+                list.Add(item);
+            }
+
+            var max = Math.Max(1, provider.MaxBatchSize);
+            foreach (var cluster in clusters.Values)
+            {
+                for (var i = 0; i < cluster.Count; i += max)
+                {
+                    var count = Math.Min(max, cluster.Count - i);
+                    if (count == 1)
+                        singles.Add(cluster[i]);
+                    else
+                        slices.Add((provider, cluster.GetRange(i, count)));
+                }
+            }
+        }
+
+        // 4. Dispatch.
+        await Parallel.ForEachAsync(singles, parallelOptions, async (p, c) =>
+            results.Add(await this.DeliverPrepared(p, c).ConfigureAwait(false))).ConfigureAwait(false);
+
+        await Parallel.ForEachAsync(slices, parallelOptions, async (slice, c) =>
+            await this.DeliverBatch(slice.Provider, slice.Items, results, c).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+
+    async Task<(Prepared? Prepared, PushDeliveryResult? Early)> Prepare(Guid batchId, PushNotification notification, DeviceRegistration registration, CancellationToken ct)
+    {
+        var provider = this.SelectProvider(registration);
+        if (provider == null)
+        {
+            this.RecordNoProvider(registration, null);
+            return (null, PushDeliveryResult.Failed(registration, PushDeliveryStatus.NoProvider, "no provider for platform"));
+        }
+
+        var context = new PushSendContext(batchId, registration, notification);
+        if (await this.RunBeforeSend(context, provider, ct).ConfigureAwait(false))
+            return (null, PushDeliveryResult.Failed(registration, PushDeliveryStatus.Skipped));
+
+        return (new Prepared(provider, context), null);
+    }
+
+
+    // A single (non-batched) send for an already-prepared device — used for the leftovers of a batching chunk.
+    async Task<PushDeliveryResult> DeliverPrepared(Prepared prepared, CancellationToken ct)
+    {
+        using var activity = PushDiagnostics.Source.StartActivity("push.deliver");
+        activity?.SetTag("push.platform", prepared.Context.Registration.Platform.ToString());
+        activity?.SetTag("push.provider", prepared.Provider.Identifier);
+
+        var (result, elapsedMs) = await this.InvokeSend(prepared.Provider, prepared.Context, ct).ConfigureAwait(false);
+
+        activity?.SetTag("push.status", result.Status.ToString());
+        if (!result.IsSuccess)
+            activity?.SetStatus(ActivityStatusCode.Error, result.Reason);
+
+        await this.HandleResult(prepared.Context, result, prepared.Provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
+        return result;
+    }
+
+
+    async Task DeliverBatch(IPushBatchProvider provider, IReadOnlyList<Prepared> items, ConcurrentBag<PushDeliveryResult> results, CancellationToken ct)
+    {
+        var notification = items[0].Context.Notification;
+        var registrations = new List<DeviceRegistration>(items.Count);
+        foreach (var item in items)
+            registrations.Add(item.Context.Registration);
+
+        using var activity = PushDiagnostics.Source.StartActivity("push.deliver.batch");
+        activity?.SetTag("push.provider", provider.Identifier);
+        activity?.SetTag("push.batch_size", registrations.Count);
+
+        var startedAt = Stopwatch.GetTimestamp();
+        IReadOnlyList<PushDeliveryResult> batchResults;
+        try
+        {
+            batchResults = await provider.SendBatch(notification, registrations, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var failed = new List<PushDeliveryResult>(registrations.Count);
+            foreach (var registration in registrations)
+                failed.Add(PushDeliveryResult.Failed(registration, PushDeliveryStatus.Error, ex.Message, ex));
+            batchResults = failed;
+        }
+        var elapsedMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+
+        if (batchResults.Count != items.Count)
+        {
+            this.logger.LogError(
+                "Batch provider {Provider} returned {Got} results for {Expected} registrations; failing the batch",
+                provider.Identifier, batchResults.Count, items.Count
+            );
+            activity?.SetStatus(ActivityStatusCode.Error, "batch result count mismatch");
+            foreach (var item in items)
+            {
+                var mismatch = PushDeliveryResult.Failed(item.Context.Registration, PushDeliveryStatus.Error, "batch result count mismatch");
+                await this.HandleResult(item.Context, mismatch, provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
+                results.Add(mismatch);
+            }
+            return;
+        }
+
+        // Results are order-correlated with the input registrations (per the IPushBatchProvider contract).
+        for (var i = 0; i < items.Count; i++)
+        {
+            var result = batchResults[i];
+            await this.HandleResult(items[i].Context, result, provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
+            results.Add(result);
+        }
+    }
+
+
+    IPushProvider? SelectProvider(DeviceRegistration registration)
+        => this.providers.FirstOrDefault(p => p.CanDeliver(registration));
+
+
+    void RecordNoProvider(DeviceRegistration registration, Activity? activity)
+    {
+        this.logger.LogWarning("No provider can deliver to platform {Platform} (token {Token})", registration.Platform, Mask(registration.DeviceToken));
+        this.metrics.RecordNoProvider(registration.Platform);
+        activity?.SetStatus(ActivityStatusCode.Error, "no provider");
+    }
+
+
+    // Runs the interceptor pipeline. Returns true if a Skip short-circuited delivery (and records the metric).
+    async Task<bool> RunBeforeSend(PushSendContext context, IPushProvider provider, CancellationToken ct)
+    {
+        foreach (var interceptor in this.interceptors)
+        {
+            var decision = await interceptor.BeforeSend(context, ct).ConfigureAwait(false);
+            if (decision.Decision == InterceptorDecision.Skip)
+            {
+                this.metrics.RecordSkipped(context.Registration.Platform, provider.Identifier);
+                return true;
+            }
+        }
+        return false;
+    }
+
+
+    async Task<(PushDeliveryResult Result, double ElapsedMs)> InvokeSend(IPushProvider provider, PushSendContext context, CancellationToken ct)
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        PushDeliveryResult result;
+        try
+        {
+            result = await provider.Send(context.Notification, context.Registration, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            result = PushDeliveryResult.Failed(context.Registration, PushDeliveryStatus.Error, ex.Message, ex);
+        }
+        var elapsedMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+        return (result, elapsedMs);
+    }
+
+
+    readonly record struct Prepared(IPushProvider Provider, PushSendContext Context);
 
 
     async Task HandleResult(PushSendContext context, PushDeliveryResult result, string providerId, double elapsedMs, CancellationToken ct)

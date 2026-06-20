@@ -6,6 +6,7 @@ triggers:
   - AddPushNotifications
   - IPushManager
   - IPushProvider
+  - IPushBatchProvider
   - IPushRepository
   - IPushInterceptor
   - PushNotification
@@ -36,6 +37,8 @@ triggers:
   - server push notification
   - APNs server
   - FCM server
+  - FCM multicast
+  - push batching
   - web push VAPID
   - send push from server
 ---
@@ -260,8 +263,22 @@ await pushManager.RegisterDevice(new DeviceRegistration
 ```
 
 FCM uses `AndroidPushOptions` on the notification for `android.notification` fields (channel id, icon,
-color, image). All providers honour the cross-cutting fields (title/body, badge, sound, data, deep link,
-collapse id, TTL, priority).
+color, image); Web Push uses `WebPushOptions` (icon, urgency). All providers honour the cross-cutting
+fields (title/body, badge, sound, data, deep link, collapse id, TTL, priority).
+
+## Batching / FCM multicast
+
+`FcmProvider` implements `IPushBatchProvider` (`MaxBatchSize` 500): when `PushManagerOptions.EnableBatching`
+is on (the default), the manager packs devices that share the same notification into one multipart `/batch`
+request instead of one request per device — far fewer round trips for broadcasts and topic fan-out. This is
+automatic; no API change at the call site. Notes:
+- Grouping is by the **identical notification instance**, so an interceptor that rewrites the notification
+  per device (localization) naturally falls back to per-device sends for those devices.
+- Per-device dead-token pruning, token rotation, metrics, and `OnSent`/`OnFailed` still happen per device.
+- Set `push.Configure(m => m.EnableBatching = false)` to force per-device delivery everywhere.
+- To make a custom transport batchable, implement `IPushBatchProvider` (`MaxBatchSize` + `SendBatch`
+  returning one result per registration, in input order). Web Push has no multicast endpoint, so it stays
+  one request per device (fanned out concurrently by the manager).
 
 ## Multiple apps (keyed registration)
 
@@ -291,7 +308,8 @@ Telemetry is emitted via `System.Diagnostics.Metrics` under the meter `Shiny.Ext
 `status` (never by `BatchId`, which is high-cardinality).
 
 Distributed tracing uses the `ActivitySource` `PushDiagnostics.ActivitySourceName` (same name): a
-`push.send` span per batch and `push.deliver` per device.
+`push.send` span per batch and `push.deliver` per device (batched sends emit one `push.deliver.batch`
+span with a `push.batch_size` tag instead).
 
 ```csharp
 services.AddOpenTelemetry()
@@ -311,8 +329,9 @@ filter in-process. To replace persistence entirely, implement `IPushRepository` 
 ## Custom providers
 
 Implement `IPushProvider` (`Identifier`, `CanDeliver(registration)`, `Send(...)` returning a
-`PushDeliveryResult`) and register additively via `push.AddProvider<T>()`. For local dev/tests, the
-built-in `DebugPushProvider` logs instead of sending and claims every platform.
+`PushDeliveryResult`) and register additively via `push.AddProvider<T>()`. Optionally also implement
+`IPushBatchProvider` to deliver groups of devices in one call (see *Batching* above). For local dev/tests,
+the built-in `DebugPushProvider` logs instead of sending and claims every platform.
 
 ## Key Conventions / Gotchas
 
