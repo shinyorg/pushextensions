@@ -88,3 +88,23 @@ public enum InterceptorDecision
     /// <summary>Skip this device. No further interceptors run and the provider is not called.</summary>
     Skip
 }
+
+
+/// <summary>
+/// The kind of WNS notification, mapped to the <c>X-WNS-Type</c> header by the Windows provider. Set via
+/// <see cref="WindowsPushOptions.Type"/>. Defaults to <see cref="Toast"/>.
+/// </summary>
+public enum WnsNotificationType
+{
+    /// <summary>A toast (pop-up) notification — the default. Built as a <c>ToastGeneric</c> payload.</summary>
+    Toast,
+
+    /// <summary>A live-tile update. Supply the tile XML via <see cref="WindowsPushOptions.Payload"/>.</summary>
+    Tile,
+
+    /// <summary>A badge update (a number or glyph on the app tile).</summary>
+    Badge,
+
+    /// <summary>A raw notification — an app-defined payload delivered while the app is running.</summary>
+    Raw
+}

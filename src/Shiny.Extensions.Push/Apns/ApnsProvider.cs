@@ -12,46 +12,33 @@ namespace Shiny.Extensions.Push.Apns;
 /// Delivers to Apple devices (iOS, macOS) over APNs directly — HTTP/2, token-based (.p8) auth. No
 /// FCM/Google dependency. The token environment (sandbox vs production) is chosen per registration.
 /// </summary>
-public sealed class ApnsProvider : IPushProvider
+public sealed class ApnsProvider(
+    string appKey,
+    IHttpClientFactory httpClientFactory,
+    ApnsJwtProvider jwt,
+    IOptionsMonitor<ApnsOptions> options,
+    ILogger<ApnsProvider> logger
+) : IPushProvider
 {
     public const string HttpClientName = "shiny-apns";
 
     const string ProductionHost = "https://api.push.apple.com";
     const string SandboxHost = "https://api.sandbox.push.apple.com";
 
-    readonly string appKey;
-    readonly IHttpClientFactory httpClientFactory;
-    readonly ApnsJwtProvider jwt;
-    readonly ApnsOptions options;
-    readonly ILogger<ApnsProvider> logger;
+    readonly string appKey = appKey ?? string.Empty;
+    readonly ApnsOptions options = options.Get(appKey ?? string.Empty);
 
 
-    public ApnsProvider(
-        string appKey,
-        IHttpClientFactory httpClientFactory,
-        ApnsJwtProvider jwt,
-        IOptionsMonitor<ApnsOptions> options,
-        ILogger<ApnsProvider> logger
-    )
-    {
-        this.appKey = appKey ?? string.Empty;
-        this.httpClientFactory = httpClientFactory;
-        this.jwt = jwt;
-        this.options = options.Get(this.appKey);
-        this.logger = logger;
-    }
-
-
-    public string Identifier => this.appKey.Length == 0 ? "apns" : $"apns:{this.appKey}";
+    public string Identifier => appKey.Length == 0 ? "apns" : $"apns:{appKey}";
 
     public bool CanDeliver(DeviceRegistration registration)
         => registration.Platform is DevicePlatform.iOS or DevicePlatform.MacOS
-            && string.Equals(registration.AppId ?? string.Empty, this.appKey, StringComparison.Ordinal);
+            && string.Equals(registration.AppId ?? string.Empty, appKey, StringComparison.Ordinal);
 
 
     public async Task<PushDeliveryResult> Send(PushNotification notification, DeviceRegistration registration, CancellationToken cancellationToken = default)
     {
-        var env = this.options.ForceEnvironment ?? registration.Environment;
+        var env = options.ForceEnvironment ?? registration.Environment;
         var host = env == PushEnvironment.Sandbox ? SandboxHost : ProductionHost;
 
         var apple = notification.Apple;
@@ -65,8 +52,8 @@ public sealed class ApnsProvider : IPushProvider
         };
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
-        request.Headers.TryAddWithoutValidation("authorization", $"bearer {this.jwt.GetToken()}");
-        request.Headers.TryAddWithoutValidation("apns-topic", apple?.TopicOverride ?? this.options.BundleId);
+        request.Headers.TryAddWithoutValidation("authorization", $"bearer {jwt.GetToken()}");
+        request.Headers.TryAddWithoutValidation("apns-topic", apple?.TopicOverride ?? options.BundleId);
         request.Headers.TryAddWithoutValidation("apns-push-type", apple?.PushTypeOverride ?? (silent ? "background" : "alert"));
 
         // Background pushes must be priority 5.
@@ -79,7 +66,7 @@ public sealed class ApnsProvider : IPushProvider
         if (notification.TimeToLive is { } ttl)
             request.Headers.TryAddWithoutValidation("apns-expiration", DateTimeOffset.UtcNow.Add(ttl).ToUnixTimeSeconds().ToString());
 
-        var client = this.httpClientFactory.CreateClient(HttpClientName);
+        var client = httpClientFactory.CreateClient(HttpClientName);
 
         using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (response.IsSuccessStatusCode)
@@ -90,7 +77,7 @@ public sealed class ApnsProvider : IPushProvider
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         var reason = ParseReason(body);
-        return this.MapFailure(registration, response.StatusCode, reason);
+        return MapFailure(registration, response.StatusCode, reason);
     }
 
 
@@ -107,8 +94,8 @@ public sealed class ApnsProvider : IPushProvider
         // Provider token problems — refresh and treat as transient.
         if (reason is "ExpiredProviderToken" or "InvalidProviderToken" or "MissingProviderToken")
         {
-            this.jwt.Invalidate();
-            this.logger.LogWarning("APNs rejected provider token ({Reason}); invalidated cache", reason);
+            jwt.Invalidate();
+            logger.LogWarning("APNs rejected provider token ({Reason}); invalidated cache", reason);
             return PushDeliveryResult.Failed(registration, PushDeliveryStatus.Error, reason);
         }
 

@@ -18,69 +18,62 @@ namespace Shiny.Extensions.Push.DocumentDb;
 /// evaluate the remaining <see cref="PushFilter"/> clauses in-process — keeping the repository AOT-safe
 /// and provider-agnostic. See CLAUDE.md decision 10.
 /// </remarks>
-public sealed class DocumentDbPushRepository : IPushRepository
+public sealed class DocumentDbPushRepository(IDocumentStore store, IOptions<DocumentDbOptions> options) : IPushRepository
 {
     static readonly JsonTypeInfo<PushRegistrationDocument> TypeInfo = PushDocumentJsonContext.Default.PushRegistrationDocument;
 
-    readonly IDocumentStore store;
-    readonly DocumentDbOptions options;
-
-    public DocumentDbPushRepository(IDocumentStore store, IOptions<DocumentDbOptions> options)
-    {
-        this.store = store;
-        this.options = options.Value;
-    }
+    readonly DocumentDbOptions options = options.Value;
 
 
     public Task Save(DeviceRegistration registration, CancellationToken cancellationToken = default)
-        => this.store.Upsert(PushRegistrationDocument.From(registration), TypeInfo);
+        => store.Upsert(PushRegistrationDocument.From(registration), TypeInfo);
 
 
     public Task<bool> Remove(string deviceToken, DevicePlatform platform, CancellationToken cancellationToken = default)
-        => this.store.Remove<PushRegistrationDocument>(PushRegistrationDocument.BuildId(platform, deviceToken), cancellationToken);
+        => store.Remove<PushRegistrationDocument>(PushRegistrationDocument.BuildId(platform, deviceToken), cancellationToken);
 
 
     public async Task UpdateToken(string oldToken, DevicePlatform platform, string newToken, CancellationToken cancellationToken = default)
     {
         var oldId = PushRegistrationDocument.BuildId(platform, oldToken);
-        var existing = await this.store.Get<PushRegistrationDocument>(oldId, TypeInfo).ConfigureAwait(false);
+        var existing = await store.Get<PushRegistrationDocument>(oldId, TypeInfo).ConfigureAwait(false);
         if (existing == null)
             return;
 
-        await this.store.Remove<PushRegistrationDocument>(oldId, cancellationToken).ConfigureAwait(false);
+        await store.Remove<PushRegistrationDocument>(oldId, cancellationToken).ConfigureAwait(false);
         existing.DeviceToken = newToken;
         existing.Id = PushRegistrationDocument.BuildId(platform, newToken);
-        await this.store.Upsert(existing, TypeInfo).ConfigureAwait(false);
+        await store.Upsert(existing, TypeInfo).ConfigureAwait(false);
     }
 
 
     public async Task Subscribe(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default)
     {
         var id = PushRegistrationDocument.BuildId(platform, deviceToken);
-        var doc = await this.store.Get<PushRegistrationDocument>(id, TypeInfo).ConfigureAwait(false);
+        var doc = await store.Get<PushRegistrationDocument>(id, TypeInfo).ConfigureAwait(false);
         if (doc == null || doc.Topics.Contains(topic))
             return;
 
         doc.Topics.Add(topic);
-        await this.store.Upsert(doc, TypeInfo).ConfigureAwait(false);
+        await store.Upsert(doc, TypeInfo).ConfigureAwait(false);
     }
 
 
     public async Task Unsubscribe(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default)
     {
         var id = PushRegistrationDocument.BuildId(platform, deviceToken);
-        var doc = await this.store.Get<PushRegistrationDocument>(id, TypeInfo).ConfigureAwait(false);
+        var doc = await store.Get<PushRegistrationDocument>(id, TypeInfo).ConfigureAwait(false);
         if (doc == null || !doc.Topics.Remove(topic))
             return;
 
-        await this.store.Upsert(doc, TypeInfo).ConfigureAwait(false);
+        await store.Upsert(doc, TypeInfo).ConfigureAwait(false);
     }
 
 
     public async Task<IReadOnlyList<DeviceRegistration>> GetRegistrations(PushFilter filter, CancellationToken cancellationToken = default)
     {
         var results = new List<DeviceRegistration>();
-        await foreach (var reg in this.StreamRegistrations(filter, cancellationToken).ConfigureAwait(false))
+        await foreach (var reg in StreamRegistrations(filter, cancellationToken).ConfigureAwait(false))
             results.Add(reg);
         return results;
     }
@@ -90,10 +83,10 @@ public sealed class DocumentDbPushRepository : IPushRepository
         PushFilter filter,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var query = this.store.Query<PushRegistrationDocument>(TypeInfo);
+        var query = store.Query<PushRegistrationDocument>(TypeInfo);
 
         // Push down the high-value, translation-safe scalar equalities; the rest is applied in-process.
-        if (this.options.QueryPushdown)
+        if (options.QueryPushdown)
         {
             if (filter.UserIdentifier is { } user)
                 query = query.Where(d => d.UserIdentifier == user);

@@ -3,8 +3,9 @@ namespace Shiny.Extensions.Push;
 
 /// <summary>
 /// A platform-neutral push notification. Cross-cutting fields live here; per-platform escape hatches
-/// live in the <see cref="Apple"/>/<see cref="Android"/>/<see cref="WebPush"/> option objects so a
-/// provider can honour native capabilities without the core model having to model all of them.
+/// live in the <see cref="Apple"/>/<see cref="Android"/>/<see cref="WebPush"/>/<see cref="Windows"/>
+/// option objects so a provider can honour native capabilities without the core model having to model
+/// all of them.
 /// </summary>
 /// <remarks>
 /// <see cref="Title"/> and <see cref="Message"/> are nullable on purpose: a data-only/silent push
@@ -47,6 +48,9 @@ public record PushNotification
 
     /// <summary>WebPush specific overrides. Reserved for the WebPush provider.</summary>
     public WebPushOptions? WebPush { get; init; }
+
+    /// <summary>Windows (WNS) specific overrides. Honoured by the WNS provider.</summary>
+    public WindowsPushOptions? Windows { get; init; }
 }
 
 
@@ -107,4 +111,28 @@ public record WebPushOptions
 
     /// <summary>Urgency hint sent to the push service ("very-low", "low", "normal", "high").</summary>
     public string? Urgency { get; init; }
+}
+
+
+/// <summary>Windows (WNS) specific notification overrides. Honoured by the WNS provider.</summary>
+public record WindowsPushOptions
+{
+    /// <summary>
+    /// The WNS notification kind, which sets the <c>X-WNS-Type</c> header (and content type). Defaults to
+    /// <see cref="WnsNotificationType.Toast"/>.
+    /// </summary>
+    public WnsNotificationType Type { get; init; } = WnsNotificationType.Toast;
+
+    /// <summary>
+    /// A complete WNS payload sent verbatim instead of the one built from the cross-cutting fields — toast/
+    /// tile/badge XML, or an arbitrary string for a raw notification. Use for tile/badge updates or advanced
+    /// toast templates the neutral model doesn't cover.
+    /// </summary>
+    public string? Payload { get; init; }
+
+    /// <summary>
+    /// The toast <c>launch</c> activation argument (passed to the app when the toast is tapped). Falls back
+    /// to the notification's <see cref="PushNotification.DeepLink"/>.
+    /// </summary>
+    public string? Launch { get; init; }
 }

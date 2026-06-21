@@ -14,7 +14,12 @@ namespace Shiny.Extensions.Push.Fcm;
 /// cached bearer token. Single sends hit <c>messages:send</c>; the manager can also batch up to
 /// <see cref="MaxBatchSize"/> devices into one multipart <c>/batch</c> request (FCM multicast). AOT-safe.
 /// </summary>
-public sealed class FcmProvider : IPushProvider, IPushBatchProvider
+public sealed class FcmProvider(
+    string appKey,
+    IHttpClientFactory httpClientFactory,
+    FcmAccessTokenProvider tokenProvider,
+    ILogger<FcmProvider> logger
+) : IPushProvider, IPushBatchProvider
 {
     public const string HttpClientName = "shiny-fcm";
 
@@ -22,39 +27,22 @@ public sealed class FcmProvider : IPushProvider, IPushBatchProvider
     const int BatchLimit = 500;
     const string BatchBoundary = "shiny_push_fcm_batch";
 
-    readonly string appKey;
-    readonly IHttpClientFactory httpClientFactory;
-    readonly FcmAccessTokenProvider tokenProvider;
-    readonly ILogger<FcmProvider> logger;
+    readonly string appKey = appKey ?? string.Empty;
 
 
-    public FcmProvider(
-        string appKey,
-        IHttpClientFactory httpClientFactory,
-        FcmAccessTokenProvider tokenProvider,
-        ILogger<FcmProvider> logger
-    )
-    {
-        this.appKey = appKey ?? string.Empty;
-        this.httpClientFactory = httpClientFactory;
-        this.tokenProvider = tokenProvider;
-        this.logger = logger;
-    }
-
-
-    public string Identifier => this.appKey.Length == 0 ? "fcm" : $"fcm:{this.appKey}";
+    public string Identifier => appKey.Length == 0 ? "fcm" : $"fcm:{appKey}";
 
     public int MaxBatchSize => BatchLimit;
 
     public bool CanDeliver(DeviceRegistration registration)
         => registration.Platform == DevicePlatform.Android
-            && string.Equals(registration.AppId ?? string.Empty, this.appKey, StringComparison.Ordinal);
+            && string.Equals(registration.AppId ?? string.Empty, appKey, StringComparison.Ordinal);
 
 
     public async Task<PushDeliveryResult> Send(PushNotification notification, DeviceRegistration registration, CancellationToken cancellationToken = default)
     {
-        var accessToken = await this.tokenProvider.GetAccessToken(cancellationToken).ConfigureAwait(false);
-        var url = $"https://fcm.googleapis.com/v1/projects/{this.tokenProvider.ProjectId}/messages:send";
+        var accessToken = await tokenProvider.GetAccessToken(cancellationToken).ConfigureAwait(false);
+        var url = $"https://fcm.googleapis.com/v1/projects/{tokenProvider.ProjectId}/messages:send";
 
         using var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
@@ -63,7 +51,7 @@ public sealed class FcmProvider : IPushProvider, IPushBatchProvider
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        var client = this.httpClientFactory.CreateClient(HttpClientName);
+        var client = httpClientFactory.CreateClient(HttpClientName);
         using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
@@ -71,7 +59,7 @@ public sealed class FcmProvider : IPushProvider, IPushBatchProvider
             return PushDeliveryResult.Success(registration, providerMessageId: ParseName(body));
 
         var errorCode = ParseErrorCode(body);
-        return this.MapFailure(registration, response.StatusCode, errorCode);
+        return MapFailure(registration, response.StatusCode, errorCode);
     }
 
 
@@ -87,10 +75,10 @@ public sealed class FcmProvider : IPushProvider, IPushBatchProvider
 
         // A single device isn't worth the multipart envelope — use the normal endpoint.
         if (registrations.Count == 1)
-            return [await this.Send(notification, registrations[0], cancellationToken).ConfigureAwait(false)];
+            return [await Send(notification, registrations[0], cancellationToken).ConfigureAwait(false)];
 
-        var accessToken = await this.tokenProvider.GetAccessToken(cancellationToken).ConfigureAwait(false);
-        var path = $"/v1/projects/{this.tokenProvider.ProjectId}/messages:send";
+        var accessToken = await tokenProvider.GetAccessToken(cancellationToken).ConfigureAwait(false);
+        var path = $"/v1/projects/{tokenProvider.ProjectId}/messages:send";
 
         var sb = new StringBuilder();
         for (var i = 0; i < registrations.Count; i++)
@@ -114,25 +102,25 @@ public sealed class FcmProvider : IPushProvider, IPushBatchProvider
             Parameters = { new NameValueHeaderValue("boundary", BatchBoundary) }
         };
 
-        var client = this.httpClientFactory.CreateClient(HttpClientName);
+        var client = httpClientFactory.CreateClient(HttpClientName);
         using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
         // A non-2xx on the batch envelope itself (auth, malformed request) fails every device uniformly.
         if (!response.IsSuccessStatusCode)
         {
-            this.logger.LogWarning("FCM batch request failed: {Status}", response.StatusCode);
+            logger.LogWarning("FCM batch request failed: {Status}", response.StatusCode);
             var errorCode = ParseErrorCode(body);
             var failed = new List<PushDeliveryResult>(registrations.Count);
             foreach (var registration in registrations)
-                failed.Add(this.MapFailure(registration, response.StatusCode, errorCode));
+                failed.Add(MapFailure(registration, response.StatusCode, errorCode));
             return failed;
         }
 
         var responseBoundary = response.Content.Headers.ContentType?.Parameters
             .FirstOrDefault(p => string.Equals(p.Name, "boundary", StringComparison.OrdinalIgnoreCase))?.Value?.Trim('"');
 
-        return this.ParseBatchResponse(body, responseBoundary, registrations);
+        return ParseBatchResponse(body, responseBoundary, registrations);
     }
 
 
@@ -158,7 +146,7 @@ public sealed class FcmProvider : IPushProvider, IPushBatchProvider
         if (status == HttpStatusCode.TooManyRequests || status == HttpStatusCode.ServiceUnavailable)
             return PushDeliveryResult.Failed(registration, PushDeliveryStatus.RateLimited, errorCode ?? status.ToString());
 
-        this.logger.LogWarning("FCM send failed: {Status} {Reason}", status, errorCode);
+        logger.LogWarning("FCM send failed: {Status} {Reason}", status, errorCode);
         return PushDeliveryResult.Failed(registration, PushDeliveryStatus.Error, errorCode ?? status.ToString());
     }
 
@@ -223,12 +211,12 @@ public sealed class FcmProvider : IPushProvider, IPushBatchProvider
                     continue;
 
                 var (status, json) = ExtractHttpPart(part);
-                results.Add(this.MapBatchPart(registrations[results.Count], status, json));
+                results.Add(MapBatchPart(registrations[results.Count], status, json));
             }
         }
         else
         {
-            this.logger.LogWarning("FCM batch response had no multipart boundary; failing the batch");
+            logger.LogWarning("FCM batch response had no multipart boundary; failing the batch");
         }
 
         // If the server returned fewer parts than we sent, fail the remainder rather than silently dropping.
@@ -262,5 +250,5 @@ public sealed class FcmProvider : IPushProvider, IPushBatchProvider
     PushDeliveryResult MapBatchPart(DeviceRegistration registration, HttpStatusCode status, string json)
         => (int)status is >= 200 and < 300
             ? PushDeliveryResult.Success(registration, providerMessageId: ParseName(json))
-            : this.MapFailure(registration, status, ParseErrorCode(json));
+            : MapFailure(registration, status, ParseErrorCode(json));
 }

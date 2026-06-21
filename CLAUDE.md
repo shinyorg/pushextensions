@@ -20,18 +20,33 @@ dotnet test             # xUnit suite (tests/Shiny.Extensions.Push.Tests)
 
 | Project | Purpose |
 |---|---|
-| `src/Shiny.Extensions.Push` | Core: models, interfaces, `PushManager` orchestrator, builder/DI, in-memory repo, debug provider, metrics, tracing |
-| `src/Shiny.Extensions.Push.Apns` | Direct APNs provider (token-based .p8 / ES256 over HTTP/2) |
-| `src/Shiny.Extensions.Push.Fcm` | Firebase Cloud Messaging HTTP v1 provider (OAuth2 service-account RS256) |
-| `src/Shiny.Extensions.Push.WebPush` | Web Push provider (VAPID + RFC 8291 aes128gcm, BCL crypto only) |
-| `src/Shiny.Extensions.Push.DocumentDb` | `IPushRepository` backed by Shiny.DocumentDb (any provider) |
+| `src/Shiny.Extensions.Push` | **Everything except persistence**: models, interfaces, orchestrator, builder/DI, in-memory repo, debug provider, metrics, tracing — **and the APNs, FCM, Web Push and WNS transports** (each in its own `Apns/` `Fcm/` `WebPush/` `Wns/` folder + namespace). Implementations sit in the `Infrastructure/` folder / `Shiny.Extensions.Push.Infrastructure` namespace. |
+| `src/Shiny.Extensions.Push.DocumentDb` | `IPushRepository` backed by Shiny.DocumentDb (any provider) — separate because it pulls a third-party dependency |
 | `samples/Push.Api` | ASP.NET Core minimal API + Scalar UI (debug provider, in-memory) |
-| `samples/AotSmokeTest` | Native-AOT console exercising core + all 3 providers (CI hardening) |
-| `tests/Shiny.Extensions.Push.Tests` | xUnit tests (manager, metrics, multi-key, topics, tracing, APNs/FCM/WebPush HTTP + crypto, SQLite integration) |
+| `samples/AotSmokeTest` | Native-AOT console exercising core + all 4 providers (CI hardening) |
+| `tests/Shiny.Extensions.Push.Tests` | xUnit tests (manager, metrics, multi-key, topics, tracing, APNs/FCM/WebPush/WNS HTTP + crypto, SQLite integration) |
 
-Abstractions currently live *in* the core project (not a separate `.Abstractions`). Providers
-reference the core. **Decision:** keep it one project until a second provider exists and we feel the
-weight; splitting later is mechanical.
+### Why the transports live in the core project (user decision, 2026-06-21)
+The APNs/FCM/Web Push/WNS providers are BCL-only (no third-party deps) and their per-platform payload option
+objects (`ApplePushOptions`/`AndroidPushOptions`/`WebPushOptions`/`WindowsPushOptions`) already live in the
+core. Extra NuGet packages bought nothing but friction, so they were **folded into `Shiny.Extensions.Push`**. Each
+transport keeps its own namespace (`Shiny.Extensions.Push.{Apns,Fcm,WebPush}`) and stays opt-in via its
+`Add*` extension, so consumers still only pay for what they register. `Microsoft.Extensions.Http` moved
+to the core package; `InternalsVisibleTo("…Tests")` lives on the core csproj now.
+- **DocumentDb stays separate** — it's the one transport/persistence piece with an external dependency
+  (`Shiny.DocumentDb`), so folding it in would force that dep on everyone.
+- **No `.Abstractions` split either** — interfaces live in the core root namespace. Splitting later (if a
+  third-party wants to implement `IPushProvider` without the transports) is still mechanical.
+
+### Namespace hygiene: user-facing root, implementations in `.Infrastructure` (user decision, 2026-06-21)
+The root `Shiny.Extensions.Push` namespace is the **public surface** — interfaces (`IPushManager` & co.),
+models/records, enums, options, `PushDiagnostics`, and the `Add*`/`UsePushNotifications` DI entry points.
+Concrete implementations users shouldn't reference directly — `PushManager`, `InMemoryPushRepository`,
+`DebugPushProvider`, `PushBuilder`, `PushMetrics` — moved to `Shiny.Extensions.Push.Infrastructure`.
+- They stay **`public`** (not `internal`): DI, `UseManager<T>()`/`AddProvider<T>()`, and tests still name
+  them; relocating the namespace is the signal, not access level.
+- Consumers inject the **interface**. The only reason to import `.Infrastructure` is to name a concrete
+  type (e.g. `AddProvider<DebugPushProvider>()`); the sample API and impl-touching tests do exactly that.
 
 ## Core architecture
 
@@ -198,6 +213,25 @@ solitary devices) falls back to the per-device path.
 - A thrown `SendBatch` or a result-count mismatch fails the whole batch (one `Error` per device); a non-2xx
   on the batch envelope itself maps every device uniformly.
 
+### 16. WNS provider (Windows, modern Entra auth). (user decision, 2026-06-21 — "Modern only")
+`Shiny.Extensions.Push.Wns` claims `DevicePlatform.Windows`. It uses the **Windows App SDK / Microsoft Entra
+(Azure AD)** auth model — **not** classic Partner Center (Package SID + `login.live.com`). `WnsOptions` takes
+`TenantId` + `ClientId` + `ClientSecret`; `WnsAccessTokenProvider` does an OAuth2 **client-credentials**
+exchange against `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token` (scope
+`https://wns.windows.com/.default`), no JWT signing, and caches the bearer token (~expiry − 5 min,
+`SemaphoreSlim`-guarded). `WnsOptions.TokenEndpoint` overrides the endpoint for sovereign clouds.
+- **Send is a POST to the channel URI** (the registration's `DeviceToken`) with `X-WNS-Type`,
+  `X-WNS-RequestForStatus`, `X-WNS-PRIORITY` (High→1, Normal→3) and optional `X-WNS-TTL`. Payload built by
+  `WnsPayloadBuilder`: a hand-written `ToastGeneric` XML toast by default (title/body `<text>`, `launch`
+  from `DeepLink`/`WindowsPushOptions.Launch`, `<audio silent>` when `Sound` is silent), or raw JSON, or a
+  verbatim `WindowsPushOptions.Payload` for tile/badge. XML is manually escaped (no `System.Xml`).
+- **Error mapping:** `410 Gone`→TokenExpired (prune), `404`→InvalidToken (prune), `406`/`429`→RateLimited,
+  `401`→Error + token-cache invalidate, others→Error. WNS can still 200 while dropping/throttling — the
+  `X-WNS-NotificationStatus` header (`dropped`/`channelthrottled`) is checked and mapped accordingly.
+  Success captures `X-WNS-Msg-ID` as `ProviderMessageId`.
+- Multi-app keyed like APNs/FCM. **No batching** (WNS has no multicast endpoint) — fanned out per device.
+- `WindowsPushOptions` (core) + `WnsNotificationType` enum (`Toast`/`Tile`/`Badge`/`Raw`).
+
 ## Roadmap / known gaps (not yet built)
 
 - **DocumentDb read pushdown beyond UserIdentifier/AppId** — tags/topics/platform still filter in-process.
@@ -213,7 +247,8 @@ solitary devices) falls back to the per-device path.
 - ✅ **Metrics** (decision 8) · **Multi-app keyed** (decision 9) · **DocumentDb repo** (decision 10).
 - ✅ **FCM** (11) · **WebPush** (12) · **Topics** (13) · **Tracing + apns-id** (14) · **DocumentDb read pushdown** (decision 10).
 - ✅ **FCM multicast / provider batching** (decision 15, `IPushBatchProvider`).
-- ✅ **Sample API + Scalar** (`samples/Push.Api`) and **native-AOT smoke test** (`samples/AotSmokeTest`, CI job `aot-smoke`) — all 3 providers verified AOT-publishable + runnable.
+- ✅ **Sample API + Scalar** (`samples/Push.Api`) and **native-AOT smoke test** (`samples/AotSmokeTest`, CI job `aot-smoke`) — all 4 providers verified AOT-publishable + runnable.
+- ✅ **WNS / Windows provider** (decision 16).
 
 ## CI / GitHub Actions
 
@@ -291,7 +326,13 @@ Do **not** write blog posts as part of a fix/feature — only when the user asks
 
 ## Conventions
 - Records for immutable models; `required` for mandatory fields.
-- `this.`-qualified member access (matches the existing style in this repo).
+- **Primary constructors** for service/provider classes. Capture pass-through dependencies as parameters
+  and use them directly (no backing field); keep a `readonly` field only when the ctor transforms the
+  argument (e.g. `appKey ?? string.Empty`, `options.Get(key)`, `.ToList()`, `IOptions<T>.Value`). When a
+  two-step init can't be a field initializer (e.g. `ECDsa.Create()` + `ImportFromPem`), use a `static`
+  helper so the field can still initialize from a primary-ctor parameter.
+- **No `this.`-qualified access in primary-constructor classes** — reference captured parameters and
+  members directly. (Classes with a conventional constructor keep the older `this.`-qualified style.)
 - Tokens are masked in logs (`PushManager.Mask`).
 - New providers: implement `IPushProvider`, ship an `Add<Provider>(this IPushBuilder)` extension that
   registers options + any `HttpClient` + the provider, and keep the project AOT-clean.

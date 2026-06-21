@@ -3,7 +3,9 @@ using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace Shiny.Extensions.Push;
+using Shiny.Extensions.Push;
+
+namespace Shiny.Extensions.Push.Infrastructure;
 
 
 /// <summary>
@@ -12,61 +14,47 @@ namespace Shiny.Extensions.Push;
 /// the normalized result (pruning dead tokens, applying rotated tokens) — all with bounded concurrency.
 /// One device failing never aborts the batch.
 /// </summary>
-public class PushManager : IPushManager
+public class PushManager(
+    IPushRepository repository,
+    IEnumerable<IPushProvider> providers,
+    IEnumerable<IPushInterceptor> interceptors,
+    IOptions<PushManagerOptions> options,
+    PushMetrics metrics,
+    ILogger<PushManager> logger
+) : IPushManager
 {
-    readonly IPushRepository repository;
-    readonly IReadOnlyList<IPushProvider> providers;
-    readonly IReadOnlyList<IPushInterceptor> interceptors;
-    readonly PushManagerOptions options;
-    readonly PushMetrics metrics;
-    readonly ILogger<PushManager> logger;
-
-
-    public PushManager(
-        IPushRepository repository,
-        IEnumerable<IPushProvider> providers,
-        IEnumerable<IPushInterceptor> interceptors,
-        IOptions<PushManagerOptions> options,
-        PushMetrics metrics,
-        ILogger<PushManager> logger
-    )
-    {
-        this.repository = repository;
-        this.providers = providers.ToList();
-        this.interceptors = interceptors.ToList();
-        this.options = options.Value;
-        this.metrics = metrics;
-        this.logger = logger;
-    }
+    readonly IReadOnlyList<IPushProvider> providers = providers.ToList();
+    readonly IReadOnlyList<IPushInterceptor> interceptors = interceptors.ToList();
+    readonly PushManagerOptions options = options.Value;
 
 
     public Task RegisterDevice(DeviceRegistration registration, CancellationToken cancellationToken = default)
-        => this.repository.Save(registration, cancellationToken);
+        => repository.Save(registration, cancellationToken);
 
     public Task UnregisterDevice(string deviceToken, DevicePlatform platform, CancellationToken cancellationToken = default)
-        => this.repository.Remove(deviceToken, platform, cancellationToken);
+        => repository.Remove(deviceToken, platform, cancellationToken);
 
     public Task SubscribeToTopic(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default)
-        => this.repository.Subscribe(deviceToken, platform, topic, cancellationToken);
+        => repository.Subscribe(deviceToken, platform, topic, cancellationToken);
 
     public Task UnsubscribeFromTopic(string deviceToken, DevicePlatform platform, string topic, CancellationToken cancellationToken = default)
-        => this.repository.Unsubscribe(deviceToken, platform, topic, cancellationToken);
+        => repository.Unsubscribe(deviceToken, platform, topic, cancellationToken);
 
 
     public Task<PushSendResult> SendToUser(string userIdentifier, PushNotification notification, CancellationToken cancellationToken = default)
-        => this.Send(notification, new PushFilter { UserIdentifier = userIdentifier }, cancellationToken);
+        => Send(notification, new PushFilter { UserIdentifier = userIdentifier }, cancellationToken);
 
     public Task<PushSendResult> SendToTags(IEnumerable<string> tags, PushNotification notification, TagMatch match = TagMatch.Any, CancellationToken cancellationToken = default)
-        => this.Send(notification, new PushFilter { Tags = tags.ToList(), TagMatch = match }, cancellationToken);
+        => Send(notification, new PushFilter { Tags = tags.ToList(), TagMatch = match }, cancellationToken);
 
     public Task<PushSendResult> SendToTokens(IEnumerable<string> deviceTokens, PushNotification notification, CancellationToken cancellationToken = default)
-        => this.Send(notification, new PushFilter { DeviceTokens = deviceTokens.ToList() }, cancellationToken);
+        => Send(notification, new PushFilter { DeviceTokens = deviceTokens.ToList() }, cancellationToken);
 
     public Task<PushSendResult> SendToTopic(string topic, PushNotification notification, CancellationToken cancellationToken = default)
-        => this.Send(notification, new PushFilter { Topic = topic }, cancellationToken);
+        => Send(notification, new PushFilter { Topic = topic }, cancellationToken);
 
     public Task<PushSendResult> Broadcast(PushNotification notification, CancellationToken cancellationToken = default)
-        => this.Send(notification, PushFilter.Broadcast, cancellationToken);
+        => Send(notification, PushFilter.Broadcast, cancellationToken);
 
 
     public async Task<PushSendResult> Send(PushNotification notification, PushFilter filter, CancellationToken cancellationToken = default)
@@ -77,27 +65,27 @@ public class PushManager : IPushManager
         using var activity = PushDiagnostics.Source.StartActivity("push.send");
         activity?.SetTag("push.batch_id", batchId);
 
-        this.logger.LogInformation("Push batch {BatchId} starting", batchId);
+        logger.LogInformation("Push batch {BatchId} starting", batchId);
 
         var parallelOptions = new ParallelOptions
         {
-            MaxDegreeOfParallelism = Math.Max(1, this.options.MaxDegreeOfParallelism),
+            MaxDegreeOfParallelism = Math.Max(1, options.MaxDegreeOfParallelism),
             CancellationToken = cancellationToken
         };
 
-        var canBatch = this.options.EnableBatching && this.providers.Any(p => p is IPushBatchProvider);
+        var canBatch = options.EnableBatching && providers.Any(p => p is IPushBatchProvider);
         if (canBatch)
         {
-            await this.SendChunked(batchId, notification, filter, results, parallelOptions, cancellationToken).ConfigureAwait(false);
+            await SendChunked(batchId, notification, filter, results, parallelOptions, cancellationToken).ConfigureAwait(false);
         }
         else
         {
             await Parallel.ForEachAsync(
-                this.repository.StreamRegistrations(filter, cancellationToken),
+                repository.StreamRegistrations(filter, cancellationToken),
                 parallelOptions,
                 async (registration, ct) =>
                 {
-                    var result = await this.DeliverOne(batchId, notification, registration, ct).ConfigureAwait(false);
+                    var result = await DeliverOne(batchId, notification, registration, ct).ConfigureAwait(false);
                     results.Add(result);
                 }
             ).ConfigureAwait(false);
@@ -111,7 +99,7 @@ public class PushManager : IPushManager
         activity?.SetTag("push.tokens_removed", sendResult.TokensRemoved);
         activity?.SetTag("push.skipped", sendResult.Skipped);
 
-        this.logger.LogInformation(
+        logger.LogInformation(
             "Push batch {BatchId} complete: {Sent} sent, {Failed} failed, {Removed} pruned, {Skipped} skipped",
             batchId, sendResult.Sent, sendResult.Failed, sendResult.TokensRemoved, sendResult.Skipped
         );
@@ -126,28 +114,28 @@ public class PushManager : IPushManager
         using var activity = PushDiagnostics.Source.StartActivity("push.deliver");
         activity?.SetTag("push.platform", registration.Platform.ToString());
 
-        var provider = this.SelectProvider(registration);
+        var provider = SelectProvider(registration);
         if (provider == null)
         {
-            this.RecordNoProvider(registration, activity);
+            RecordNoProvider(registration, activity);
             return PushDeliveryResult.Failed(registration, PushDeliveryStatus.NoProvider, "no provider for platform");
         }
         activity?.SetTag("push.provider", provider.Identifier);
 
         var context = new PushSendContext(batchId, registration, notification);
-        if (await this.RunBeforeSend(context, provider, ct).ConfigureAwait(false))
+        if (await RunBeforeSend(context, provider, ct).ConfigureAwait(false))
         {
             activity?.SetTag("push.status", nameof(PushDeliveryStatus.Skipped));
             return PushDeliveryResult.Failed(registration, PushDeliveryStatus.Skipped);
         }
 
-        var (result, elapsedMs) = await this.InvokeSend(provider, context, ct).ConfigureAwait(false);
+        var (result, elapsedMs) = await InvokeSend(provider, context, ct).ConfigureAwait(false);
 
         activity?.SetTag("push.status", result.Status.ToString());
         if (!result.IsSuccess)
             activity?.SetStatus(ActivityStatusCode.Error, result.Reason);
 
-        await this.HandleResult(context, result, provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
+        await HandleResult(context, result, provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
         return result;
     }
 
@@ -159,21 +147,21 @@ public class PushManager : IPushManager
     {
         var chunkSize = Math.Max(
             parallelOptions.MaxDegreeOfParallelism,
-            this.providers.OfType<IPushBatchProvider>().Max(p => Math.Max(1, p.MaxBatchSize))
+            providers.OfType<IPushBatchProvider>().Max(p => Math.Max(1, p.MaxBatchSize))
         );
 
         var buffer = new List<DeviceRegistration>(chunkSize);
-        await foreach (var registration in this.repository.StreamRegistrations(filter, ct).WithCancellation(ct).ConfigureAwait(false))
+        await foreach (var registration in repository.StreamRegistrations(filter, ct).WithCancellation(ct).ConfigureAwait(false))
         {
             buffer.Add(registration);
             if (buffer.Count >= chunkSize)
             {
-                await this.ProcessChunk(batchId, notification, buffer, results, parallelOptions, ct).ConfigureAwait(false);
+                await ProcessChunk(batchId, notification, buffer, results, parallelOptions, ct).ConfigureAwait(false);
                 buffer.Clear();
             }
         }
         if (buffer.Count > 0)
-            await this.ProcessChunk(batchId, notification, buffer, results, parallelOptions, ct).ConfigureAwait(false);
+            await ProcessChunk(batchId, notification, buffer, results, parallelOptions, ct).ConfigureAwait(false);
     }
 
 
@@ -183,7 +171,7 @@ public class PushManager : IPushManager
         var prepared = new ConcurrentBag<Prepared>();
         await Parallel.ForEachAsync(chunk, parallelOptions, async (registration, c) =>
         {
-            var (item, early) = await this.Prepare(batchId, notification, registration, c).ConfigureAwait(false);
+            var (item, early) = await Prepare(batchId, notification, registration, c).ConfigureAwait(false);
             if (early is not null)
                 results.Add(early);
             else if (item is { } value)
@@ -236,24 +224,24 @@ public class PushManager : IPushManager
 
         // 4. Dispatch.
         await Parallel.ForEachAsync(singles, parallelOptions, async (p, c) =>
-            results.Add(await this.DeliverPrepared(p, c).ConfigureAwait(false))).ConfigureAwait(false);
+            results.Add(await DeliverPrepared(p, c).ConfigureAwait(false))).ConfigureAwait(false);
 
         await Parallel.ForEachAsync(slices, parallelOptions, async (slice, c) =>
-            await this.DeliverBatch(slice.Provider, slice.Items, results, c).ConfigureAwait(false)).ConfigureAwait(false);
+            await DeliverBatch(slice.Provider, slice.Items, results, c).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
 
     async Task<(Prepared? Prepared, PushDeliveryResult? Early)> Prepare(Guid batchId, PushNotification notification, DeviceRegistration registration, CancellationToken ct)
     {
-        var provider = this.SelectProvider(registration);
+        var provider = SelectProvider(registration);
         if (provider == null)
         {
-            this.RecordNoProvider(registration, null);
+            RecordNoProvider(registration, null);
             return (null, PushDeliveryResult.Failed(registration, PushDeliveryStatus.NoProvider, "no provider for platform"));
         }
 
         var context = new PushSendContext(batchId, registration, notification);
-        if (await this.RunBeforeSend(context, provider, ct).ConfigureAwait(false))
+        if (await RunBeforeSend(context, provider, ct).ConfigureAwait(false))
             return (null, PushDeliveryResult.Failed(registration, PushDeliveryStatus.Skipped));
 
         return (new Prepared(provider, context), null);
@@ -267,13 +255,13 @@ public class PushManager : IPushManager
         activity?.SetTag("push.platform", prepared.Context.Registration.Platform.ToString());
         activity?.SetTag("push.provider", prepared.Provider.Identifier);
 
-        var (result, elapsedMs) = await this.InvokeSend(prepared.Provider, prepared.Context, ct).ConfigureAwait(false);
+        var (result, elapsedMs) = await InvokeSend(prepared.Provider, prepared.Context, ct).ConfigureAwait(false);
 
         activity?.SetTag("push.status", result.Status.ToString());
         if (!result.IsSuccess)
             activity?.SetStatus(ActivityStatusCode.Error, result.Reason);
 
-        await this.HandleResult(prepared.Context, result, prepared.Provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
+        await HandleResult(prepared.Context, result, prepared.Provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
         return result;
     }
 
@@ -310,7 +298,7 @@ public class PushManager : IPushManager
 
         if (batchResults.Count != items.Count)
         {
-            this.logger.LogError(
+            logger.LogError(
                 "Batch provider {Provider} returned {Got} results for {Expected} registrations; failing the batch",
                 provider.Identifier, batchResults.Count, items.Count
             );
@@ -318,7 +306,7 @@ public class PushManager : IPushManager
             foreach (var item in items)
             {
                 var mismatch = PushDeliveryResult.Failed(item.Context.Registration, PushDeliveryStatus.Error, "batch result count mismatch");
-                await this.HandleResult(item.Context, mismatch, provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
+                await HandleResult(item.Context, mismatch, provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
                 results.Add(mismatch);
             }
             return;
@@ -328,20 +316,20 @@ public class PushManager : IPushManager
         for (var i = 0; i < items.Count; i++)
         {
             var result = batchResults[i];
-            await this.HandleResult(items[i].Context, result, provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
+            await HandleResult(items[i].Context, result, provider.Identifier, elapsedMs, ct).ConfigureAwait(false);
             results.Add(result);
         }
     }
 
 
     IPushProvider? SelectProvider(DeviceRegistration registration)
-        => this.providers.FirstOrDefault(p => p.CanDeliver(registration));
+        => providers.FirstOrDefault(p => p.CanDeliver(registration));
 
 
     void RecordNoProvider(DeviceRegistration registration, Activity? activity)
     {
-        this.logger.LogWarning("No provider can deliver to platform {Platform} (token {Token})", registration.Platform, Mask(registration.DeviceToken));
-        this.metrics.RecordNoProvider(registration.Platform);
+        logger.LogWarning("No provider can deliver to platform {Platform} (token {Token})", registration.Platform, Mask(registration.DeviceToken));
+        metrics.RecordNoProvider(registration.Platform);
         activity?.SetStatus(ActivityStatusCode.Error, "no provider");
     }
 
@@ -349,12 +337,12 @@ public class PushManager : IPushManager
     // Runs the interceptor pipeline. Returns true if a Skip short-circuited delivery (and records the metric).
     async Task<bool> RunBeforeSend(PushSendContext context, IPushProvider provider, CancellationToken ct)
     {
-        foreach (var interceptor in this.interceptors)
+        foreach (var interceptor in interceptors)
         {
             var decision = await interceptor.BeforeSend(context, ct).ConfigureAwait(false);
             if (decision.Decision == InterceptorDecision.Skip)
             {
-                this.metrics.RecordSkipped(context.Registration.Platform, provider.Identifier);
+                metrics.RecordSkipped(context.Registration.Platform, provider.Identifier);
                 return true;
             }
         }
@@ -393,28 +381,28 @@ public class PushManager : IPushManager
         switch (result.Status)
         {
             case PushDeliveryStatus.Success:
-                this.metrics.RecordSent(registration.Platform, providerId, elapsedMs);
+                metrics.RecordSent(registration.Platform, providerId, elapsedMs);
                 if (result.UpdatedToken is { Length: > 0 } && result.UpdatedToken != registration.DeviceToken)
-                    await this.SafeRepo(() => this.repository.UpdateToken(registration.DeviceToken, registration.Platform, result.UpdatedToken, ct)).ConfigureAwait(false);
+                    await SafeRepo(() => repository.UpdateToken(registration.DeviceToken, registration.Platform, result.UpdatedToken, ct)).ConfigureAwait(false);
 
-                await this.FanOut(i => i.OnSent(context, result, ct)).ConfigureAwait(false);
+                await FanOut(i => i.OnSent(context, result, ct)).ConfigureAwait(false);
                 break;
 
             case PushDeliveryStatus.TokenExpired:
             case PushDeliveryStatus.InvalidToken:
-                this.metrics.RecordPruned(registration.Platform, providerId, result.Status, elapsedMs);
-                if (this.options.AutoPruneDeadTokens)
+                metrics.RecordPruned(registration.Platform, providerId, result.Status, elapsedMs);
+                if (options.AutoPruneDeadTokens)
                 {
-                    this.logger.LogInformation("Pruning dead token {Token} ({Reason})", Mask(registration.DeviceToken), result.Reason);
-                    await this.SafeRepo(() => this.repository.Remove(registration.DeviceToken, registration.Platform, ct)).ConfigureAwait(false);
+                    logger.LogInformation("Pruning dead token {Token} ({Reason})", Mask(registration.DeviceToken), result.Reason);
+                    await SafeRepo(() => repository.Remove(registration.DeviceToken, registration.Platform, ct)).ConfigureAwait(false);
                 }
-                await this.FanOut(i => i.OnFailed(context, result, ct)).ConfigureAwait(false);
+                await FanOut(i => i.OnFailed(context, result, ct)).ConfigureAwait(false);
                 break;
 
             default:
-                this.metrics.RecordFailed(registration.Platform, providerId, result.Status, elapsedMs);
-                this.logger.LogWarning("Delivery failed for {Token}: {Status} {Reason}", Mask(registration.DeviceToken), result.Status, result.Reason);
-                await this.FanOut(i => i.OnFailed(context, result, ct)).ConfigureAwait(false);
+                metrics.RecordFailed(registration.Platform, providerId, result.Status, elapsedMs);
+                logger.LogWarning("Delivery failed for {Token}: {Status} {Reason}", Mask(registration.DeviceToken), result.Status, result.Reason);
+                await FanOut(i => i.OnFailed(context, result, ct)).ConfigureAwait(false);
                 break;
         }
     }
@@ -422,7 +410,7 @@ public class PushManager : IPushManager
 
     async Task FanOut(Func<IPushInterceptor, Task> action)
     {
-        foreach (var interceptor in this.interceptors)
+        foreach (var interceptor in interceptors)
         {
             try
             {
@@ -430,7 +418,7 @@ public class PushManager : IPushManager
             }
             catch (Exception ex)
             {
-                this.logger.LogError(ex, "Interceptor {Interceptor} threw", interceptor.GetType().Name);
+                logger.LogError(ex, "Interceptor {Interceptor} threw", interceptor.GetType().Name);
             }
         }
     }
@@ -444,7 +432,7 @@ public class PushManager : IPushManager
         }
         catch (Exception ex)
         {
-            this.logger.LogError(ex, "Repository operation failed");
+            logger.LogError(ex, "Repository operation failed");
         }
     }
 

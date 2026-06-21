@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Scalar.AspNetCore;
 using Shiny.Extensions.Push;
+using Shiny.Extensions.Push.Infrastructure;   // DebugPushProvider lives here
 
 var builder = WebApplication.CreateBuilder(args);
 

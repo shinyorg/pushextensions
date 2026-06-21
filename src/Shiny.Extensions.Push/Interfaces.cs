@@ -141,7 +141,7 @@ public interface IPushBuilder
     /// <summary>Add an interceptor. Additive — they run in registration order.</summary>
     IPushBuilder AddInterceptor<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] T>() where T : class, IPushInterceptor;
 
-    /// <summary>Replace the manager implementation. Defaults to the built-in <see cref="PushManager"/>.</summary>
+    /// <summary>Replace the manager implementation. Defaults to the built-in <see cref="Infrastructure.PushManager"/>.</summary>
     IPushBuilder UseManager<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] T>() where T : class, IPushManager;
 
     /// <summary>Tune dispatch behaviour (concurrency, etc.).</summary>

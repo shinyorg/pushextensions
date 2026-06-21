@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
-namespace Shiny.Extensions.Push;
+using Shiny.Extensions.Push;
+
+namespace Shiny.Extensions.Push.Infrastructure;
 
 
 /// <summary>

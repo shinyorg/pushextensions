@@ -11,34 +11,33 @@ namespace Shiny.Extensions.Push.Apns;
 /// we mint at most one token per <see cref="RefreshAfter"/> window and reuse it across all sends and
 /// both environments.
 /// </summary>
-public sealed class ApnsJwtProvider : IDisposable
+public sealed class ApnsJwtProvider(ApnsOptions options) : IDisposable
 {
     static readonly TimeSpan RefreshAfter = TimeSpan.FromMinutes(50); // Apple allows up to 60 min
 
-    readonly ApnsOptions options;
-    readonly ECDsa key;
+    readonly ECDsa key = ImportKey(options.ResolvePrivateKeyPem());
     readonly Lock gate = new();
     string? cachedToken;
     DateTimeOffset issuedAt;
 
 
-    public ApnsJwtProvider(ApnsOptions options)
+    static ECDsa ImportKey(string pem)
     {
-        this.options = options;
-        this.key = ECDsa.Create();
-        this.key.ImportFromPem(this.options.ResolvePrivateKeyPem());
+        var key = ECDsa.Create();
+        key.ImportFromPem(pem);
+        return key;
     }
 
 
     /// <summary>Returns a valid bearer token, regenerating only when the cached one is stale.</summary>
     public string GetToken()
     {
-        lock (this.gate)
+        lock (gate)
         {
-            if (this.cachedToken == null || (DateTimeOffset.UtcNow - this.issuedAt) >= RefreshAfter)
-                this.cachedToken = this.Generate();
+            if (cachedToken == null || (DateTimeOffset.UtcNow - issuedAt) >= RefreshAfter)
+                cachedToken = Generate();
 
-            return this.cachedToken;
+            return cachedToken;
         }
     }
 
@@ -46,23 +45,23 @@ public sealed class ApnsJwtProvider : IDisposable
     /// <summary>Drop the cached token so the next <see cref="GetToken"/> mints a fresh one (e.g. after a 403).</summary>
     public void Invalidate()
     {
-        lock (this.gate)
-            this.cachedToken = null;
+        lock (gate)
+            cachedToken = null;
     }
 
 
     string Generate()
     {
         var now = DateTimeOffset.UtcNow;
-        this.issuedAt = now;
+        issuedAt = now;
 
-        var header = $"{{\"alg\":\"ES256\",\"kid\":\"{this.options.KeyId}\"}}";
-        var payload = $"{{\"iss\":\"{this.options.TeamId}\",\"iat\":{now.ToUnixTimeSeconds()}}}";
+        var header = $"{{\"alg\":\"ES256\",\"kid\":\"{options.KeyId}\"}}";
+        var payload = $"{{\"iss\":\"{options.TeamId}\",\"iat\":{now.ToUnixTimeSeconds()}}}";
 
         var signingInput = $"{Encode(Encoding.UTF8.GetBytes(header))}.{Encode(Encoding.UTF8.GetBytes(payload))}";
 
         // JWS ES256 requires the raw r||s concatenation (IEEE P1363), NOT a DER-encoded signature.
-        var signature = this.key.SignData(
+        var signature = key.SignData(
             Encoding.ASCII.GetBytes(signingInput),
             HashAlgorithmName.SHA256,
             DSASignatureFormat.IeeeP1363FixedFieldConcatenation
@@ -74,5 +73,5 @@ public sealed class ApnsJwtProvider : IDisposable
 
     static string Encode(ReadOnlySpan<byte> bytes) => Base64Url.EncodeToString(bytes);
 
-    public void Dispose() => this.key.Dispose();
+    public void Dispose() => key.Dispose();
 }

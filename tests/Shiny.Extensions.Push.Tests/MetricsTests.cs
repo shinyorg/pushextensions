@@ -2,6 +2,7 @@ using System.Diagnostics.Metrics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Shiny.Extensions.Push;
+using Shiny.Extensions.Push.Infrastructure;
 
 namespace Shiny.Extensions.Push.Tests;
 

@@ -2,14 +2,19 @@
 
   <PropertyGroup>
     <RootNamespace>Shiny.Extensions.Push</RootNamespace>
-    <Description>Server-side push notification dispatch for .NET applications (provider-agnostic core).</Description>
+    <Description>Server-side push notification dispatch for .NET applications — provider-agnostic core plus the built-in APNs, FCM and Web Push transports.</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Options" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Extensions.Push.Tests" />
   </ItemGroup>
 
 </Project>

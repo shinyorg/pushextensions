@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 
-namespace Shiny.Extensions.Push;
+using Shiny.Extensions.Push;
+
+namespace Shiny.Extensions.Push.Infrastructure;
 
 
 /// <summary>

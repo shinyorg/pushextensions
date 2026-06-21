@@ -1,7 +1,7 @@
 namespace Shiny.Extensions.Push;
 
 
-/// <summary>Tuning knobs for the built-in <see cref="PushManager"/>.</summary>
+/// <summary>Tuning knobs for the built-in <see cref="Infrastructure.PushManager"/>.</summary>
 public class PushManagerOptions
 {
     /// <summary>

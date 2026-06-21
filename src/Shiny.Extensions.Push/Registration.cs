@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Shiny.Extensions.Push.Infrastructure;
 
 namespace Shiny.Extensions.Push;
 

@@ -1,19 +1,22 @@
 # Shiny.Extensions.Push
 
 Server-side push notification dispatch for .NET. Provider-agnostic core with transports for **APNs**
-(direct, `.p8`/ES256 over HTTP/2), **FCM** (HTTP v1, with multicast batching) and **Web Push** (VAPID +
-RFC 8291). Structured targeting, topics, interceptors, dead-token pruning, multi-app keyed registration,
-metrics + tracing. AOT/trim friendly (verified by a native-AOT smoke test).
+(direct, `.p8`/ES256 over HTTP/2), **FCM** (HTTP v1, with multicast batching), **Web Push** (VAPID +
+RFC 8291) and **WNS** (Windows, modern Windows App SDK / Entra auth). Structured targeting, topics,
+interceptors, dead-token pruning, multi-app keyed registration, metrics + tracing. AOT/trim friendly
+(verified by a native-AOT smoke test).
 
 See [`samples/Push.Api`](./samples/Push.Api) for a runnable ASP.NET Core API with a Scalar UI.
 
-| Package | Transport |
+| Package | Contents |
 |---|---|
-| `Shiny.Extensions.Push` | core (manager, in-memory repo, debug provider) |
-| `Shiny.Extensions.Push.Apns` | Apple (iOS/macOS) |
-| `Shiny.Extensions.Push.Fcm` | Android (FCM HTTP v1) |
-| `Shiny.Extensions.Push.WebPush` | Browsers (VAPID) |
+| `Shiny.Extensions.Push` | core (manager, in-memory repo, debug provider) **plus the built-in APNs, FCM, Web Push and WNS transports** |
 | `Shiny.Extensions.Push.DocumentDb` | persistence over any Shiny.DocumentDb backend |
+
+> The four transports ship **in the core package** — there are no separate `*.Apns` / `*.Fcm` /
+> `*.WebPush` / `*.Wns` packages. Each still lives in its own namespace (`Shiny.Extensions.Push.Apns`,
+> `.Fcm`, `.WebPush`, `.Wns`) and is opt-in via `AddApns` / `AddFcm` / `AddWebPush` / `AddWns`, so you only
+> pay for what you register.
 
 ## Platform setup
 
@@ -90,6 +93,24 @@ Requires your site served over **HTTPS** (or `localhost`) with a **service worke
 You end up with: VAPID **PublicKey**, **PrivateKey**, **Subject**, and per device the **endpoint** +
 **p256dh** + **auth** (mapped to `DeviceToken` and `Data` — see [Register a device](#register-a-device)).
 
+### Windows — WNS (Windows App SDK / Entra)
+
+Uses the **modern** WNS auth model (Windows App SDK / WinUI 3 / unpackaged apps) — Microsoft Entra (Azure
+AD), **not** the classic Partner Center Package SID + secret.
+
+1. **Register an app in Microsoft Entra** ([entra.microsoft.com](https://entra.microsoft.com) → *App
+   registrations* → **New registration**). Note the **Directory (tenant) ID** and **Application (client)
+   ID**.
+2. **Create a client secret** (App registration → *Certificates & secrets* → **New client secret**) — copy
+   the value (shown once).
+3. **Associate the app with WNS** in [Partner Center](https://partner.microsoft.com) and grant the Entra
+   app the WNS access, per the [Windows App SDK push docs](https://learn.microsoft.com/windows/apps/windows-app-sdk/notifications/push-notifications/).
+4. **Client app** — request a WNS/push channel via the Windows App SDK (`PushNotificationManager`) and POST
+   the **channel URI** to your server.
+
+You end up with: **TenantId**, **ClientId**, **ClientSecret**, and per device the **channel URI** (stored
+as the registration's `DeviceToken`).
+
 ## Wiring
 
 ```csharp
@@ -110,6 +131,13 @@ services.AddPushNotifications(push =>
         o.PublicKey  = "<vapid-public-key>";    // base64url (web-push format)
         o.PrivateKey = "<vapid-private-key>";
         o.Subject    = "mailto:you@example.com";
+    });
+
+    push.AddWns(o =>
+    {
+        o.TenantId     = "<entra-tenant-id>";
+        o.ClientId     = "<app-registration-client-id>";
+        o.ClientSecret = "<client-secret>";
     });
 
     // push.UseDocumentDb(o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=push.db"));

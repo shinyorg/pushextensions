@@ -5,6 +5,7 @@ using Shiny.Extensions.Push;
 using Shiny.Extensions.Push.Apns;
 using Shiny.Extensions.Push.Fcm;
 using Shiny.Extensions.Push.WebPush;
+using Shiny.Extensions.Push.Wns;
 
 // Native-AOT smoke test: wires the core + every transport with valid (generated) credentials, resolves
 // the manager (which constructs all providers + their JWT/VAPID/token machinery), and runs a send. If
@@ -32,12 +33,19 @@ services.AddPushNotifications(push =>
         o.PrivateKey = priv;
         o.Subject = "mailto:smoke@example.com";
     });
+
+    push.AddWns(o =>
+    {
+        o.TenantId = "11111111-1111-1111-1111-111111111111";
+        o.ClientId = "22222222-2222-2222-2222-222222222222";
+        o.ClientSecret = "smoke-secret";
+    });
 });
 
 await using var provider = services.BuildServiceProvider();
 var manager = provider.GetRequiredService<IPushManager>();
 
-// Force construction of every IPushProvider (APNs/FCM/WebPush) — exercises key import paths.
+// Force construction of every IPushProvider (APNs/FCM/WebPush/WNS) — exercises key import paths.
 var count = provider.GetServices<IPushProvider>().Count();
 Console.WriteLine($"providers resolved: {count}");
 

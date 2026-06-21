@@ -13,9 +13,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Shiny.Extensions.Push\Shiny.Extensions.Push.csproj" />
-    <ProjectReference Include="..\..\src\Shiny.Extensions.Push.Apns\Shiny.Extensions.Push.Apns.csproj" />
-    <ProjectReference Include="..\..\src\Shiny.Extensions.Push.Fcm\Shiny.Extensions.Push.Fcm.csproj" />
-    <ProjectReference Include="..\..\src\Shiny.Extensions.Push.WebPush\Shiny.Extensions.Push.WebPush.csproj" />
   </ItemGroup>
 
 </Project>

@@ -14,40 +14,27 @@ namespace Shiny.Extensions.Push.WebPush;
 /// encryption). The subscription endpoint is the registration's <see cref="DeviceRegistration.DeviceToken"/>;
 /// the <c>p256dh</c> and <c>auth</c> keys live in <see cref="DeviceRegistration.Data"/>.
 /// </summary>
-public sealed class WebPushProvider : IPushProvider
+public sealed class WebPushProvider(
+    string appKey,
+    IHttpClientFactory httpClientFactory,
+    WebPushVapid vapid,
+    IOptionsMonitor<WebPushOptions> options,
+    ILogger<WebPushProvider> logger
+) : IPushProvider
 {
     public const string HttpClientName = "shiny-webpush";
     public const string P256dhKey = "p256dh";
     public const string AuthKey = "auth";
 
-    readonly string appKey;
-    readonly IHttpClientFactory httpClientFactory;
-    readonly WebPushVapid vapid;
-    readonly WebPushOptions options;
-    readonly ILogger<WebPushProvider> logger;
+    readonly string appKey = appKey ?? string.Empty;
+    readonly WebPushOptions options = options.Get(appKey ?? string.Empty);
 
 
-    public WebPushProvider(
-        string appKey,
-        IHttpClientFactory httpClientFactory,
-        WebPushVapid vapid,
-        IOptionsMonitor<WebPushOptions> options,
-        ILogger<WebPushProvider> logger
-    )
-    {
-        this.appKey = appKey ?? string.Empty;
-        this.httpClientFactory = httpClientFactory;
-        this.vapid = vapid;
-        this.options = options.Get(this.appKey);
-        this.logger = logger;
-    }
-
-
-    public string Identifier => this.appKey.Length == 0 ? "webpush" : $"webpush:{this.appKey}";
+    public string Identifier => appKey.Length == 0 ? "webpush" : $"webpush:{appKey}";
 
     public bool CanDeliver(DeviceRegistration registration)
         => registration.Platform == DevicePlatform.WebBrowser
-            && string.Equals(registration.AppId ?? string.Empty, this.appKey, StringComparison.Ordinal);
+            && string.Equals(registration.AppId ?? string.Empty, appKey, StringComparison.Ordinal);
 
 
     public async Task<PushDeliveryResult> Send(PushNotification notification, DeviceRegistration registration, CancellationToken cancellationToken = default)
@@ -75,7 +62,7 @@ public sealed class WebPushProvider : IPushProvider
             return PushDeliveryResult.Failed(registration, PushDeliveryStatus.InvalidToken, "key/encryption error", ex);
         }
 
-        var ttl = (long)(notification.TimeToLive ?? this.options.DefaultTimeToLive).TotalSeconds;
+        var ttl = (long)(notification.TimeToLive ?? options.DefaultTimeToLive).TotalSeconds;
 
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
@@ -84,11 +71,11 @@ public sealed class WebPushProvider : IPushProvider
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         request.Content.Headers.ContentEncoding.Add("aes128gcm");
         request.Headers.TryAddWithoutValidation("TTL", ttl.ToString());
-        request.Headers.TryAddWithoutValidation("Authorization", this.vapid.CreateAuthorizationHeader(endpoint, DateTimeOffset.UtcNow));
+        request.Headers.TryAddWithoutValidation("Authorization", vapid.CreateAuthorizationHeader(endpoint, DateTimeOffset.UtcNow));
         if (notification.WebPush?.Urgency is { } urgency)
             request.Headers.TryAddWithoutValidation("Urgency", urgency);
 
-        var client = this.httpClientFactory.CreateClient(HttpClientName);
+        var client = httpClientFactory.CreateClient(HttpClientName);
         using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
 
         if (response.IsSuccessStatusCode)
@@ -97,7 +84,7 @@ public sealed class WebPushProvider : IPushProvider
             return PushDeliveryResult.Success(registration, providerMessageId: location);
         }
 
-        return this.MapFailure(registration, response.StatusCode);
+        return MapFailure(registration, response.StatusCode);
     }
 
 
@@ -114,7 +101,7 @@ public sealed class WebPushProvider : IPushProvider
                 return PushDeliveryResult.Failed(registration, PushDeliveryStatus.RateLimited, status.ToString());
 
             default:
-                this.logger.LogWarning("WebPush send failed: {Status}", status);
+                logger.LogWarning("WebPush send failed: {Status}", status);
                 return PushDeliveryResult.Failed(registration, PushDeliveryStatus.Error, status.ToString());
         }
     }
