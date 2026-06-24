@@ -32,40 +32,30 @@ jobs:
 
       - name: Sync skills directory
         run: |
-          mkdir -p skills-repo/skills
-
-          # Remove this repo's skills from the target first so renames/deletions sync cleanly.
-          for skill_dir in source/skills/*/; do
-            if [ -d "$skill_dir" ]; then
-              skill_name=$(basename "$skill_dir")
-              rm -rf "skills-repo/skills/$skill_name"
-            fi
-          done
-
-          # Copy all skills from source
-          for skill_dir in source/skills/*/; do
-            if [ -d "$skill_dir" ]; then
-              skill_name=$(basename "$skill_dir")
-              cp -r "$skill_dir" "skills-repo/skills/$skill_name"
-            fi
-          done
+          # Copy skills content to the shiny-extensions plugin in the skills repo
+          if [ -d "source/skills/shiny-extensions-push" ]; then
+            # Remove existing skill directory to ensure clean sync
+            rm -rf skills-repo/plugins/shiny-extensions/skills/shiny-extensions-push
+            mkdir -p skills-repo/plugins/shiny-extensions/skills
+            cp -r source/skills/shiny-extensions-push skills-repo/plugins/shiny-extensions/skills/
+          fi
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.SKILLS_REPO_TOKEN }}
           path: skills-repo
-          commit-message: "Update skills from ${{ github.repository }}"
-          title: "Update skills from ${{ github.event.repository.name }}"
+          commit-message: "Update shiny-extensions-push skill from pushextensions repository"
+          title: "Update shiny-extensions-push skill"
           body: |
-            This PR updates skills from the [${{ github.repository }}](${{ github.server_url }}/${{ github.repository }}) repository.
+            This PR updates the shiny-extensions-push skill from the [pushextensions repository](https://github.com/shinyorg/pushextensions).
 
             **Source commit:** ${{ github.sha }}
             **Triggered by:** @${{ github.actor }}
 
             ---
             *This PR was automatically created by the [sync-skills workflow](${{ github.server_url }}/${{ github.repository }}/actions/workflows/sync-skills.yml).*
-          branch: update-${{ github.event.repository.name }}-skills
+          branch: update-pushextensions-skills
           delete-branch: true
           labels: |
             automated
