@@ -3,7 +3,8 @@
 Server-side push notification dispatch for .NET. Provider-agnostic core with transports for **APNs**
 (direct, `.p8`/ES256 over HTTP/2), **FCM** (HTTP v1, with multicast batching), **Web Push** (VAPID +
 RFC 8291) and **WNS** (Windows, modern Windows App SDK / Entra auth). Structured targeting, topics,
-interceptors, dead-token pruning, multi-app keyed registration, metrics + tracing. AOT/trim friendly
+interceptors, dead-token pruning, multi-app keyed registration, runtime static/dynamic (multi-tenant)
+configuration, metrics + tracing. AOT/trim friendly
 (verified by a native-AOT smoke test).
 
 See [`samples/Push.Api`](./samples/Push.Api) for a runnable ASP.NET Core API with a Scalar UI.
@@ -235,6 +236,45 @@ await pushManager.RegisterDevice(new DeviceRegistration
 // target one app explicitly
 await pushManager.Send(notification, new PushFilter { AppId = "driver", Tags = ["on-shift"] });
 ```
+
+## Runtime configuration (dynamic / multi-tenant)
+
+The **static** path is the plain registration you've already seen — `AddApns(o => …)` (or the keyed
+`AddApns("key", o => …)`) bakes the credentials in at startup.
+
+For a **dynamic** setup — many apps, or tenants and keys that change without a restart — supply credentials
+at **send time** through an `IPushConfigurationProvider`, keyed by `DeviceRegistration.AppId`. Register the
+provider once with `UsePushConfiguration<T>()` and opt each transport in with its **no-argument** overload
+(`AddApns()` / `AddFcm()` / `AddWebPush()` / `AddWns()`):
+
+```csharp
+public sealed class MyTenantConfig(MyDbContext db) : IPushConfigurationProvider   // scoped — can inject a DbContext
+{
+    public async ValueTask<PushConfiguration?> GetConfiguration(string appId, CancellationToken ct = default)
+    {
+        var t = await db.Tenants.FindAsync([appId], ct);
+        return t is null ? null : new PushConfiguration
+        {
+            AppId = appId,
+            Apns  = t.HasApns ? new ApnsOptions { TeamId = t.TeamId, KeyId = t.KeyId, BundleId = t.BundleId, PrivateKey = t.P8 } : null,
+            Fcm   = t.HasFcm  ? new FcmOptions  { ServiceAccountJson = t.FcmJson } : null
+        };
+    }
+}
+
+services.AddPushNotifications(push => push
+    .UsePushConfiguration<MyTenantConfig>()   // registered Scoped
+    .AddApns()                                // config-driven APNs
+    .AddFcm());                               // config-driven FCM
+```
+
+`UsePushConfiguration<T>()` registers your provider as **scoped**, so it can depend on scoped services like an
+EF `DbContext`; the singleton delivery providers open a fresh DI scope per send to resolve it. The library
+reuses each app's minted APNs JWT / OAuth bearer on the transport's normal token lifetime and **re-reads your
+current config when that token refreshes**, so a rotated key is picked up within one token-lifetime window —
+no version bookkeeping. Registrations with an unknown/unconfigured `AppId` return a failed result (`Error`,
+reason `"app not configured for …"`) rather than delivering. Use this model **or** the keyed
+`AddApns("key", …)` registration for a given transport, not both.
 
 ## Persistence (Shiny.DocumentDb)
 

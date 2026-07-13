@@ -8,7 +8,8 @@ namespace Shiny.Extensions.Push.WebPush;
 /// <summary>
 /// VAPID (RFC 8292) application-server authentication. Holds the P-256 signing key (imported from raw
 /// base64url, the standard web-push key format) and produces the per-origin <c>Authorization: vapid</c>
-/// header value. AOT-safe: manual ES256 JWT, no PEM/IdentityModel.
+/// header value. AOT-safe: manual ES256 JWT, no PEM/IdentityModel. The static overload mints without holding
+/// a key (used by the multi-tenant path, which resolves keys per tenant).
 /// </summary>
 public sealed class WebPushVapid(string publicKeyBase64Url, string privateKeyBase64Url, string subject) : IDisposable
 {
@@ -31,6 +32,21 @@ public sealed class WebPushVapid(string publicKeyBase64Url, string privateKeyBas
 
     /// <summary>Builds the <c>Authorization</c> header value for the given push endpoint origin.</summary>
     public string CreateAuthorizationHeader(Uri endpoint, DateTimeOffset now)
+        => Build(publicKeyB64, key, subject, endpoint, now);
+
+
+    /// <summary>
+    /// Builds the <c>Authorization</c> header from raw options, importing (and disposing) the key transiently.
+    /// Used by the multi-tenant provider, which resolves a tenant's VAPID keys per send.
+    /// </summary>
+    public static string CreateAuthorizationHeader(WebPushOptions options, Uri endpoint, DateTimeOffset now)
+    {
+        using var key = ImportKey(options.PublicKey, options.PrivateKey);
+        return Build(options.PublicKey, key, options.Subject, endpoint, now);
+    }
+
+
+    static string Build(string publicKeyB64, ECDsa key, string subject, Uri endpoint, DateTimeOffset now)
     {
         var aud = $"{endpoint.Scheme}://{endpoint.Authority}";
         var exp = now.AddHours(12).ToUnixTimeSeconds();   // RFC 8292: <= 24h

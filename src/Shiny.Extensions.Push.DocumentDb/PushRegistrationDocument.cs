@@ -70,4 +70,5 @@ public sealed class PushRegistrationDocument
 /// host configured the document store's serializer.</summary>
 [JsonSourceGenerationOptions(UseStringEnumConverter = true)]
 [JsonSerializable(typeof(PushRegistrationDocument))]
+[JsonSerializable(typeof(List<PushRegistrationDocument>))]
 public partial class PushDocumentJsonContext : JsonSerializerContext;

@@ -14,6 +14,20 @@ public static class FcmRegistration
 
 
     /// <summary>
+    /// Adds the configuration-driven FCM provider: it resolves each device's <see cref="FcmOptions"/> from the
+    /// registered <see cref="IPushConfigurationProvider"/> (see <c>UsePushConfiguration</c>) at send time, keyed by
+    /// <see cref="DeviceRegistration.AppId"/>. Batches are split per app. Use this instead of the keyed
+    /// <c>AddFcm("key", …)</c> overloads — not both.
+    /// </summary>
+    public static IPushBuilder AddFcm(this IPushBuilder builder)
+    {
+        builder.Services.AddHttpClient(FcmProvider.HttpClientName);
+        builder.Services.AddSingleton<IPushProvider, FcmTenantProvider>();
+        return builder;
+    }
+
+
+    /// <summary>
     /// Adds a keyed FCM provider for multi-app servers. The <paramref name="key"/> matches a device's
     /// <see cref="DeviceRegistration.AppId"/>; each app gets its own Firebase project + cached token.
     /// </summary>

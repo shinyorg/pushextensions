@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.Extensions.Options;
 
 namespace Shiny.Extensions.Push.Wns;
@@ -6,12 +5,11 @@ namespace Shiny.Extensions.Push.Wns;
 
 /// <summary>
 /// Mints and caches an OAuth2 access token for WNS via the Entra (Azure AD) client-credentials flow, and
-/// reuses it until shortly before it expires. No JWT signing — the app's client secret is exchanged
-/// directly. AOT-safe (form-encoded request, <see cref="JsonDocument"/> parsing).
+/// reuses it until shortly before it expires. The exchange itself lives in <see cref="WnsToken"/>, shared
+/// with the multi-tenant path.
 /// </summary>
 public sealed class WnsAccessTokenProvider : IDisposable
 {
-    const string Scope = "https://wns.windows.com/.default";
     static readonly TimeSpan Skew = TimeSpan.FromMinutes(5);
 
     readonly string tokenEndpoint;
@@ -61,29 +59,14 @@ public sealed class WnsAccessTokenProvider : IDisposable
     public void Invalidate() => this.cachedToken = null;
 
 
-    async Task<(string token, int expiresIn)> Fetch(CancellationToken ct)
-    {
-        var client = this.httpClientFactory.CreateClient(WnsProvider.HttpClientName);
-
-        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
-        {
-            ["grant_type"] = "client_credentials",
-            ["client_id"] = this.clientId,
-            ["client_secret"] = this.clientSecret,
-            ["scope"] = Scope
-        });
-
-        using var response = await client.PostAsync(this.tokenEndpoint, content, ct).ConfigureAwait(false);
-        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"WNS token exchange failed ({(int)response.StatusCode}): {body}");
-
-        using var doc = JsonDocument.Parse(body);
-        var root = doc.RootElement;
-        var token = root.GetProperty("access_token").GetString()!;
-        var expiresIn = root.TryGetProperty("expires_in", out var e) ? e.GetInt32() : 3600;
-        return (token, expiresIn);
-    }
+    ValueTask<(string Token, int ExpiresIn)> Fetch(CancellationToken ct)
+        => WnsToken.Exchange(
+            this.httpClientFactory.CreateClient(WnsProvider.HttpClientName),
+            this.tokenEndpoint,
+            this.clientId,
+            this.clientSecret,
+            ct
+        );
 
 
     public void Dispose() => this.gate.Dispose();

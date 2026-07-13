@@ -1,17 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <RootNamespace>Shiny.Extensions.Push.DocumentDb</RootNamespace>
-    <Description>Shiny.DocumentDb-backed IPushRepository for Shiny.Extensions.Push (any DocumentDb provider — SQLite, Postgres, Cosmos, …).</Description>
-  </PropertyGroup>
+    <PropertyGroup>
+        <RootNamespace>Shiny.Extensions.Push.DocumentDb</RootNamespace>
+        <Description>Shiny.DocumentDb-backed IPushRepository for Shiny.Extensions.Push (any DocumentDb provider — SQLite, Postgres, Cosmos, …).</Description>
+    </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="Shiny.DocumentDb" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Shiny.DocumentDb"/>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions"/>
+    </ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\Shiny.Extensions.Push\Shiny.Extensions.Push.csproj" />
-  </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.Extensions.Push\Shiny.Extensions.Push.csproj"/>
+    </ItemGroup>
 
 </Project>

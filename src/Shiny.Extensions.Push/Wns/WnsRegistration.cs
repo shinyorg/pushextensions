@@ -14,6 +14,20 @@ public static class WnsRegistration
 
 
     /// <summary>
+    /// Adds the configuration-driven WNS provider: it resolves each device's <see cref="WnsOptions"/> from the
+    /// registered <see cref="IPushConfigurationProvider"/> (see <c>UsePushConfiguration</c>) at send time, keyed by
+    /// <see cref="DeviceRegistration.AppId"/>. Use this instead of the keyed <c>AddWns("key", …)</c> overloads —
+    /// not both.
+    /// </summary>
+    public static IPushBuilder AddWns(this IPushBuilder builder)
+    {
+        builder.Services.AddHttpClient(WnsProvider.HttpClientName);
+        builder.Services.AddSingleton<IPushProvider, WnsTenantProvider>();
+        return builder;
+    }
+
+
+    /// <summary>
     /// Adds a keyed WNS provider for multi-app servers. The <paramref name="key"/> matches a device's
     /// <see cref="DeviceRegistration.AppId"/>; each app gets its own Entra app registration + cached token.
     /// </summary>

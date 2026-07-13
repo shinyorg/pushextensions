@@ -234,6 +234,49 @@ exchange against `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token` 
 - Multi-app keyed like APNs/FCM. **No batching** (WNS has no multicast endpoint) — fanned out per device.
 - `WindowsPushOptions` (core) + `WnsNotificationType` enum (`Toast`/`Tile`/`Badge`/`Raw`).
 
+### 17. Runtime configuration provider — static or dynamic (multi-tenant). (user decision, 2026-07-13)
+Beyond the static keyed model (decision 9, all apps known at startup, config baked in), credentials can be
+supplied at **send time** via `IPushConfigurationProvider.GetConfiguration(appId)` → `PushConfiguration?`
+(one record bundling the four optional per-transport option objects, keyed by `DeviceRegistration.AppId`).
+This lets a server onboard/offboard apps or tenants and rotate keys **without a restart**.
+- **One delivery provider per transport, config-driven.** `Apns/Fcm/WebPush/WnsTenantProvider` claim their
+  platform for *any* app (`CanDeliver` = platform only) and resolve `ApnsOptions`/etc. from the provider per
+  send. Unknown app / missing transport config → `PushDeliveryStatus.Error` ("app not configured for …"),
+  **not** a token-pruning status; a thrown provider is caught → `Error` per device, never a crashed batch.
+  Their `Identifier` collapses to `apns`/`fcm`/… (no `:key`) — per-app would be unbounded metrics cardinality
+  (consistent with decision 8: app/tenant is never a metrics tag).
+- **Registration mirrors the per-transport keyed style (user decision, 2026-07-13 — "keep the original + a
+  different version").** The static path is unchanged — `AddApns(o => …)` / `AddApns("key", o => …)` still
+  register the keyed `ApnsProvider` with baked-in config. The dynamic path adds a **no-arg** sibling overload
+  per transport (`AddApns()` / `AddFcm()` / `AddWebPush()` / `AddWns()`) that registers the config-driven
+  `*TenantProvider`, plus a one-time `UsePushConfiguration<T>()` that registers the host's
+  `IPushConfigurationProvider`. **Exclusive per transport** — a keyed `ApnsProvider` and the config-driven
+  `ApnsTenantProvider` both claim iOS; pick one per platform. (There is no `StaticPushConfigurationProvider` —
+  the original `AddApns(config)` *is* the static case.)
+- **The config provider is registered `Scoped` (user decision).** `UsePushConfiguration<T>()` does
+  `AddScoped<IPushConfigurationProvider, T>()` so a host implementation can depend on scoped services (an EF
+  `DbContext`, a per-request tenant context). The delivery providers are singletons (they hold the app-wide
+  `CredentialTokenCache` + `IHttpClientFactory`) and bridge to the scoped provider via `IServiceScopeFactory`:
+  `ScopedConfiguration.Resolve` opens a fresh scope per send, resolves `IPushConfigurationProvider`, fetches the
+  config, disposes the scope — the rest of the send (mint/HTTP) runs outside it. **Cost:** one DI scope per
+  device (per app-group for FCM batches); acceptable for the scoped-DbContext use case.
+- **No cache management (user decision).** The library keeps only a minimal per-app credential reuse map
+  (`CredentialTokenCache`, a plain unbounded `ConcurrentDictionary`, no eviction/size/version bookkeeping) —
+  required because Apple rate-limits JWT *generation* and re-exchanging an FCM/WNS bearer per send is a round
+  trip each push. It refreshes on the transport's normal token lifetime (APNs ~50 min, FCM/WNS ~expiry−5 min,
+  WebPush VAPID ~12 h), re-reading the provider's *current* config on refresh — so a **rotated key is picked
+  up within one token-lifetime window** with zero version tracking. Per-send request-shaping fields
+  (APNs `BundleId`/topic/`ForceEnvironment`) come straight from the per-send resolve, so they're always live.
+- **Shared send-cores.** The transport HTTP + error mapping was extracted to internal statics
+  (`ApnsSender`/`ApnsJwt`, `FcmSender`/`FcmToken`, `WebPushSender` + static `WebPushVapid`, `WnsSender`/`WnsToken`)
+  so the keyed and config-driven providers share one code path (keyed provider behaviour is unchanged).
+- **FCM batching spans apps.** `FcmTenantProvider.SendBatch` groups its registrations by `AppId`, issues one
+  multipart `/batch` per app (each with that app's bearer + project id), and reassembles results in the
+  original order.
+- Naming: the config type is `IPushConfigurationProvider`/`PushConfiguration` (app-centric, not "tenant") per
+  user rename; the delivery-provider classes keep the `*TenantProvider` name as the multi-app/tenant-capable
+  providers. Files live in `src/Shiny.Extensions.Push/Configuration/`.
+
 ## Roadmap / known gaps (not yet built)
 
 - **DocumentDb read pushdown beyond UserIdentifier/AppId** — tags/topics/platform still filter in-process.
@@ -251,6 +294,7 @@ exchange against `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token` 
 - ✅ **FCM multicast / provider batching** (decision 15, `IPushBatchProvider`).
 - ✅ **Sample API + Scalar** (`samples/Push.Api`) and **native-AOT smoke test** (`samples/AotSmokeTest`, CI job `aot-smoke`) — all 4 providers verified AOT-publishable + runnable.
 - ✅ **WNS / Windows provider** (decision 16).
+- ✅ **Runtime configuration provider — static + dynamic multi-tenancy** (decision 17, `IPushConfigurationProvider`).
 
 ## CI / GitHub Actions
 

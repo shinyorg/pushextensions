@@ -1,6 +1,3 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Shiny.Extensions.Push;
@@ -11,6 +8,7 @@ namespace Shiny.Extensions.Push.Apns;
 /// <summary>
 /// Delivers to Apple devices (iOS, macOS) over APNs directly — HTTP/2, token-based (.p8) auth. No
 /// FCM/Google dependency. The token environment (sandbox vs production) is chosen per registration.
+/// This is the keyed (static, single-app) provider; see the tenant-aware provider for multi-tenant servers.
 /// </summary>
 public sealed class ApnsProvider(
     string appKey,
@@ -21,9 +19,6 @@ public sealed class ApnsProvider(
 ) : IPushProvider
 {
     public const string HttpClientName = "shiny-apns";
-
-    const string ProductionHost = "https://api.push.apple.com";
-    const string SandboxHost = "https://api.sandbox.push.apple.com";
 
     readonly string appKey = appKey ?? string.Empty;
     readonly ApnsOptions options = options.Get(appKey ?? string.Empty);
@@ -36,88 +31,15 @@ public sealed class ApnsProvider(
             && string.Equals(registration.AppId ?? string.Empty, appKey, StringComparison.Ordinal);
 
 
-    public async Task<PushDeliveryResult> Send(PushNotification notification, DeviceRegistration registration, CancellationToken cancellationToken = default)
-    {
-        var env = options.ForceEnvironment ?? registration.Environment;
-        var host = env == PushEnvironment.Sandbox ? SandboxHost : ProductionHost;
-
-        var apple = notification.Apple;
-        var silent = apple?.ContentAvailable == true && notification.Title is null && notification.Message is null;
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{host}/3/device/{registration.DeviceToken}")
-        {
-            Version = HttpVersion.Version20,
-            VersionPolicy = HttpVersionPolicy.RequestVersionExact,
-            Content = new ByteArrayContent(ApnsPayloadBuilder.Build(notification))
-        };
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-
-        request.Headers.TryAddWithoutValidation("authorization", $"bearer {jwt.GetToken()}");
-        request.Headers.TryAddWithoutValidation("apns-topic", apple?.TopicOverride ?? options.BundleId);
-        request.Headers.TryAddWithoutValidation("apns-push-type", apple?.PushTypeOverride ?? (silent ? "background" : "alert"));
-
-        // Background pushes must be priority 5.
-        var priority = silent || notification.Priority == PushPriority.Normal ? "5" : "10";
-        request.Headers.TryAddWithoutValidation("apns-priority", priority);
-
-        if (notification.CollapseId is { } collapseId)
-            request.Headers.TryAddWithoutValidation("apns-collapse-id", collapseId);
-
-        if (notification.TimeToLive is { } ttl)
-            request.Headers.TryAddWithoutValidation("apns-expiration", DateTimeOffset.UtcNow.Add(ttl).ToUnixTimeSeconds().ToString());
-
-        var client = httpClientFactory.CreateClient(HttpClientName);
-
-        using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (response.IsSuccessStatusCode)
-        {
-            var apnsId = response.Headers.TryGetValues("apns-id", out var ids) ? ids.FirstOrDefault() : null;
-            return PushDeliveryResult.Success(registration, providerMessageId: apnsId);
-        }
-
-        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        var reason = ParseReason(body);
-        return MapFailure(registration, response.StatusCode, reason);
-    }
-
-
-    PushDeliveryResult MapFailure(DeviceRegistration registration, HttpStatusCode status, string? reason)
-    {
-        // Token is gone (app uninstalled / no longer registered).
-        if (status == HttpStatusCode.Gone || reason == "Unregistered")
-            return PushDeliveryResult.Failed(registration, PushDeliveryStatus.TokenExpired, reason);
-
-        // Token is structurally invalid or not for this app.
-        if (reason is "BadDeviceToken" or "DeviceTokenNotForTopic" or "MissingDeviceToken")
-            return PushDeliveryResult.Failed(registration, PushDeliveryStatus.InvalidToken, reason);
-
-        // Provider token problems — refresh and treat as transient.
-        if (reason is "ExpiredProviderToken" or "InvalidProviderToken" or "MissingProviderToken")
-        {
-            jwt.Invalidate();
-            logger.LogWarning("APNs rejected provider token ({Reason}); invalidated cache", reason);
-            return PushDeliveryResult.Failed(registration, PushDeliveryStatus.Error, reason);
-        }
-
-        if (status == HttpStatusCode.TooManyRequests || reason == "TooManyRequests")
-            return PushDeliveryResult.Failed(registration, PushDeliveryStatus.RateLimited, reason);
-
-        return PushDeliveryResult.Failed(registration, PushDeliveryStatus.Error, reason ?? status.ToString());
-    }
-
-
-    static string? ParseReason(string body)
-    {
-        if (string.IsNullOrWhiteSpace(body))
-            return null;
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            return doc.RootElement.TryGetProperty("reason", out var r) ? r.GetString() : null;
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
+    public Task<PushDeliveryResult> Send(PushNotification notification, DeviceRegistration registration, CancellationToken cancellationToken = default)
+        => ApnsSender.Send(
+            httpClientFactory.CreateClient(HttpClientName),
+            options,
+            jwt.GetToken(),
+            jwt.Invalidate,
+            notification,
+            registration,
+            logger,
+            cancellationToken
+        );
 }

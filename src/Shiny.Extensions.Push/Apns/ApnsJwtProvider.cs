@@ -1,6 +1,4 @@
-using System.Buffers.Text;
 using System.Security.Cryptography;
-using System.Text;
 
 namespace Shiny.Extensions.Push.Apns;
 
@@ -54,24 +52,9 @@ public sealed class ApnsJwtProvider(ApnsOptions options) : IDisposable
     {
         var now = DateTimeOffset.UtcNow;
         issuedAt = now;
-
-        var header = $"{{\"alg\":\"ES256\",\"kid\":\"{options.KeyId}\"}}";
-        var payload = $"{{\"iss\":\"{options.TeamId}\",\"iat\":{now.ToUnixTimeSeconds()}}}";
-
-        var signingInput = $"{Encode(Encoding.UTF8.GetBytes(header))}.{Encode(Encoding.UTF8.GetBytes(payload))}";
-
-        // JWS ES256 requires the raw r||s concatenation (IEEE P1363), NOT a DER-encoded signature.
-        var signature = key.SignData(
-            Encoding.ASCII.GetBytes(signingInput),
-            HashAlgorithmName.SHA256,
-            DSASignatureFormat.IeeeP1363FixedFieldConcatenation
-        );
-
-        return $"{signingInput}.{Encode(signature)}";
+        return ApnsJwt.Sign(options, key, now);
     }
 
-
-    static string Encode(ReadOnlySpan<byte> bytes) => Base64Url.EncodeToString(bytes);
 
     public void Dispose() => key.Dispose();
 }

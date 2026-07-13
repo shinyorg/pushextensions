@@ -18,6 +18,28 @@ public static class ApnsRegistration
 
 
     /// <summary>
+    /// Adds the configuration-driven APNs provider: it resolves each device's <see cref="ApnsOptions"/> from the
+    /// registered <see cref="IPushConfigurationProvider"/> (see <c>UsePushConfiguration</c>) at send time, keyed by
+    /// <see cref="DeviceRegistration.AppId"/>. Use this instead of the keyed <c>AddApns("key", …)</c> overloads —
+    /// not both, as both would claim iOS/macOS.
+    /// </summary>
+    public static IPushBuilder AddApns(this IPushBuilder builder)
+    {
+        builder.Services
+            .AddHttpClient(ApnsProvider.HttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                EnableMultipleHttp2Connections = true,
+                PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+                AutomaticDecompression = DecompressionMethods.All
+            });
+
+        builder.Services.AddSingleton<IPushProvider, ApnsTenantProvider>();
+        return builder;
+    }
+
+
+    /// <summary>
     /// Adds a keyed APNs provider for multi-app servers. The <paramref name="key"/> matches a device's
     /// <see cref="DeviceRegistration.AppId"/>, so each app gets its own bundle id, team, .p8 key and
     /// JWT cache. Call once per app. Honours each registration's sandbox/production environment unless
