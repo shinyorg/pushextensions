@@ -7,7 +7,6 @@
 
   <ItemGroup>
     <PackageReference Include="Shiny.DocumentDb" />
-    <PackageReference Include="Shiny.DocumentDb.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
   </ItemGroup>
 

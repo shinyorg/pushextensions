@@ -153,9 +153,11 @@ so it runs on any DocumentDb backend the host registers (SQLite, Postgres, SQL S
   next send when the provider reports the old token dead. Documented; acceptable for v1.
 - **Store registration is the host's job.** `UseDocumentDb()` assumes an `IDocumentStore` is registered;
   `UseDocumentDb(Action<DocumentStoreOptions>)` registers one for you (set `DatabaseProvider`).
-- Pin note: Shiny.DocumentDb 8.0.0 requires `Microsoft.Extensions.*` ≥ 10.0.3 (we pin 10.0.3). `Remove<T>`
-  takes `(id, CancellationToken)` — **no** `JsonTypeInfo` (no deserialization); the other CRUD/query calls take
-  the optional `JsonTypeInfo<T>`.
+- Pin note: Shiny.DocumentDb `11.0.0` (v11 targets net10.0) requires `Microsoft.Extensions.*` ≥ 10.0.7
+  (we pin 10.0.7). As of v11 the DI surface (`AddDocumentStore`, `AddMultiTenantDocumentStore`, `DocumentStoreOptions`)
+  is **folded into the core `Shiny.DocumentDb` package** — the separate `Shiny.DocumentDb.Extensions.DependencyInjection`
+  package is gone, so we no longer reference it. `Remove<T>` takes `(id, CancellationToken)` — **no** `JsonTypeInfo`
+  (no deserialization); the other CRUD/query calls take the optional `JsonTypeInfo<T>`.
 
 ## Naming
 Namespace/package root is `Shiny.Extensions.Push` (this is the server counterpart to the client-side

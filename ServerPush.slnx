@@ -1,22 +1,15 @@
 <Solution>
-  <Folder Name="/samples/">
+    <Folder Name="/Solution/">
+        <File Path="CLAUDE.md" />
+        <File Path="Directory.Build.props" />
+        <File Path="Directory.Packages.props" />
+        <File Path="NuGet.config" />
+        <File Path="README.md" />
+        <File Path="version.json" />
+    </Folder>
     <Project Path="samples/AotSmokeTest/AotSmokeTest.csproj" />
     <Project Path="samples/Push.Api/Push.Api.csproj" />
-  </Folder>
-  <Folder Name="/Solution/">
-    <File Path="CLAUDE.md" />
-    <File Path="Directory.Build.props" />
-    <File Path="Directory.Build.targets" />
-    <File Path="Directory.Packages.props" />
-    <File Path="NuGet.config" />
-    <File Path="README.md" />
-    <File Path="version.json" />
-  </Folder>
-  <Folder Name="/src/">
     <Project Path="src/Shiny.Extensions.Push.DocumentDb/Shiny.Extensions.Push.DocumentDb.csproj" />
     <Project Path="src/Shiny.Extensions.Push/Shiny.Extensions.Push.csproj" />
-  </Folder>
-  <Folder Name="/tests/">
     <Project Path="tests/Shiny.Extensions.Push.Tests/Shiny.Extensions.Push.Tests.csproj" />
-  </Folder>
 </Solution>
