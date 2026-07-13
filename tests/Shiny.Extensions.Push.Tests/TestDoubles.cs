@@ -103,3 +103,51 @@ public sealed class SkipAndRewriteInterceptor : IPushInterceptor
     public Task OnSent(PushSendContext context, PushDeliveryResult result, CancellationToken cancellationToken = default) => Task.CompletedTask;
     public Task OnFailed(PushSendContext context, PushDeliveryResult result, CancellationToken cancellationToken = default) => Task.CompletedTask;
 }
+
+
+/// <summary>Records every lifecycle event so tests can assert ordering, counts and payloads.</summary>
+public sealed class RecordingEventReceiver : IPushEventReceiver
+{
+    public int BatchStarted;
+    public int BatchFinished;
+    public ConcurrentBag<string> SentTokens { get; } = [];
+    public ConcurrentBag<(string Token, PushDeliveryStatus Status)> Failed { get; } = [];
+    public volatile PushSendResult? FinishedResult;
+    public ConcurrentBag<Guid> BatchIds { get; } = [];
+
+    public Task OnBatchStarted(Guid batchId, PushFilter filter, PushNotification notification, CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref this.BatchStarted);
+        this.BatchIds.Add(batchId);
+        return Task.CompletedTask;
+    }
+
+    public Task OnSent(Guid batchId, DeviceRegistration registration, PushNotification notification, PushDeliveryResult result, CancellationToken cancellationToken = default)
+    {
+        this.SentTokens.Add(registration.DeviceToken);
+        return Task.CompletedTask;
+    }
+
+    public Task OnFailed(Guid batchId, DeviceRegistration registration, PushNotification notification, PushDeliveryResult result, CancellationToken cancellationToken = default)
+    {
+        this.Failed.Add((registration.DeviceToken, result.Status));
+        return Task.CompletedTask;
+    }
+
+    public Task OnBatchFinished(Guid batchId, PushNotification notification, PushSendResult result, CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref this.BatchFinished);
+        this.FinishedResult = result;
+        return Task.CompletedTask;
+    }
+}
+
+
+/// <summary>Throws from every hook — proves a misbehaving receiver never breaks a batch.</summary>
+public sealed class ThrowingEventReceiver : IPushEventReceiver
+{
+    public Task OnBatchStarted(Guid batchId, PushFilter filter, PushNotification notification, CancellationToken cancellationToken = default) => throw new InvalidOperationException("boom");
+    public Task OnSent(Guid batchId, DeviceRegistration registration, PushNotification notification, PushDeliveryResult result, CancellationToken cancellationToken = default) => throw new InvalidOperationException("boom");
+    public Task OnFailed(Guid batchId, DeviceRegistration registration, PushNotification notification, PushDeliveryResult result, CancellationToken cancellationToken = default) => throw new InvalidOperationException("boom");
+    public Task OnBatchFinished(Guid batchId, PushNotification notification, PushSendResult result, CancellationToken cancellationToken = default) => throw new InvalidOperationException("boom");
+}

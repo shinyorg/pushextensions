@@ -277,6 +277,27 @@ This lets a server onboard/offboard apps or tenants and rotate keys **without a 
   user rename; the delivery-provider classes keep the `*TenantProvider` name as the multi-app/tenant-capable
   providers. Files live in `src/Shiny.Extensions.Push/Configuration/`.
 
+### 18. Event receivers — read-only lifecycle observers, distinct from interceptors. (user decision, 2026-07-13)
+`IPushEventReceiver` is a **pure observer** of the send lifecycle (telemetry, receipts, dead-letter capture,
+dashboards). It is deliberately **separate from `IPushInterceptor`**, which is a per-device *pipeline*
+participant that can `Skip`/mutate the notification and has no batch-level hooks. Receivers cannot alter
+delivery. Registered additively via `IPushBuilder.AddEventReceiver<T>()` (as `IEnumerable<IPushEventReceiver>`),
+**zero or more** — the manager fans out to all of them.
+- **Hooks:** `OnBatchStarted(batchId, filter, notification)` once before any device is contacted;
+  `OnSent`/`OnFailed(batchId, registration, notification, PushDeliveryResult)` per device; and
+  `OnBatchFinished(batchId, notification, PushSendResult)` once with the aggregate counts.
+- **Failure signal is the normalized `PushDeliveryResult`, not a raw `Exception`** (user's original sketch
+  passed `Exception`). Most failures in this library never throw — `TokenExpired`/`InvalidToken`/`RateLimited`
+  are statuses, with the transport `Exception` (when there is one) hanging off `PushDeliveryResult.Error`.
+  Passing the result captures every failure mode; the exception alone would miss most.
+- **Fired from the same choke points as the interceptor fan-out** (`PushManager.HandleResult` for per-device
+  `OnSent`/`OnFailed`; start/end of `Send` for the batch hooks) via a `FanOutReceivers` helper that mirrors
+  `FanOut` — a thrown receiver is logged and swallowed, never breaking a batch or the other receivers.
+  **Consequence (documented, matches interceptor semantics):** interceptor-`Skip` and `NoProvider` outcomes
+  return early *before* `HandleResult`, so they don't raise per-device `OnFailed`; they're visible only in the
+  `OnBatchFinished` `PushSendResult` (`Skipped` / `Failed` counts). Per-device hooks run under the send's
+  bounded concurrency, so implementations must be thread-safe.
+
 ## Roadmap / known gaps (not yet built)
 
 - **DocumentDb read pushdown beyond UserIdentifier/AppId** — tags/topics/platform still filter in-process.
@@ -295,6 +316,7 @@ This lets a server onboard/offboard apps or tenants and rotate keys **without a 
 - ✅ **Sample API + Scalar** (`samples/Push.Api`) and **native-AOT smoke test** (`samples/AotSmokeTest`, CI job `aot-smoke`) — all 4 providers verified AOT-publishable + runnable.
 - ✅ **WNS / Windows provider** (decision 16).
 - ✅ **Runtime configuration provider — static + dynamic multi-tenancy** (decision 17, `IPushConfigurationProvider`).
+- ✅ **Event receivers — read-only lifecycle observers** (decision 18, `IPushEventReceiver`).
 
 ## CI / GitHub Actions
 

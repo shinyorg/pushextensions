@@ -9,6 +9,8 @@ triggers:
   - IPushBatchProvider
   - IPushRepository
   - IPushInterceptor
+  - IPushEventReceiver
+  - AddEventReceiver
   - PushNotification
   - DeviceRegistration
   - PushFilter
@@ -75,6 +77,7 @@ Invoke this skill when the user wants to:
 - Talk to **APNs directly** with a `.p8` auth key (iOS/macOS), **FCM** (HTTP v1) for Android, **Web Push** (VAPID) for browsers, or **WNS** (Windows App SDK / Entra auth) for Windows
 - Subscribe devices to **topics** and send to a topic
 - Mutate, localize, personalize, or suppress notifications per-device via interceptors
+- Observe the send lifecycle (batch start/finish, per-device sent/failed) for telemetry, receipts or dead-letter capture via event receivers
 - Automatically prune expired/invalid device tokens and apply rotated tokens
 - Serve **multiple apps** from one server (keyed registrations per provider)
 - Emit push delivery metrics + traces for OpenTelemetry
@@ -250,6 +253,35 @@ public sealed class LocalizationInterceptor : IPushInterceptor
 
     public Task OnSent(PushSendContext c, PushDeliveryResult r, CancellationToken ct = default) => Task.CompletedTask;
     public Task OnFailed(PushSendContext c, PushDeliveryResult r, CancellationToken ct = default) => Task.CompletedTask;
+}
+```
+
+## Event receivers (observe the send lifecycle — telemetry, receipts, dead-letter)
+
+When you just want to *watch* sends — not mutate them — implement `IPushEventReceiver` and register with
+`push.AddEventReceiver<T>()` (additive; register zero or more). Unlike interceptors, receivers can't skip
+or mutate; they're pure observers with **batch lifecycle** hooks (`OnBatchStarted`/`OnBatchFinished`) plus
+per-device `OnSent`/`OnFailed`. A receiver that throws is logged and swallowed — it never breaks a batch.
+
+`OnFailed` fires for **every** failed device, including the normalized failures that never throw
+(`TokenExpired`, `InvalidToken`, `RateLimited`, `Error`) — inspect `result.Status`/`result.Reason`.
+(Interceptor `Skip` and no-provider outcomes aren't failures; read them from the `OnBatchFinished`
+`PushSendResult` counts instead.)
+
+```csharp
+public sealed class PushTelemetry : IPushEventReceiver
+{
+    public Task OnBatchStarted(Guid batchId, PushFilter filter, PushNotification n, CancellationToken ct = default) => Task.CompletedTask;
+    public Task OnSent(Guid batchId, DeviceRegistration reg, PushNotification n, PushDeliveryResult r, CancellationToken ct = default) => Task.CompletedTask;
+
+    public Task OnFailed(Guid batchId, DeviceRegistration reg, PushNotification n, PushDeliveryResult r, CancellationToken ct = default)
+    {
+        // capture dead-letters, alert on RateLimited, etc.
+        return Task.CompletedTask;
+    }
+
+    public Task OnBatchFinished(Guid batchId, PushNotification n, PushSendResult result, CancellationToken ct = default)
+        => Task.CompletedTask; // result.Sent / .Failed / .TokensRemoved / .Skipped
 }
 ```
 

@@ -3,8 +3,8 @@
 Server-side push notification dispatch for .NET. Provider-agnostic core with transports for **APNs**
 (direct, `.p8`/ES256 over HTTP/2), **FCM** (HTTP v1, with multicast batching), **Web Push** (VAPID +
 RFC 8291) and **WNS** (Windows, modern Windows App SDK / Entra auth). Structured targeting, topics,
-interceptors, dead-token pruning, multi-app keyed registration, runtime static/dynamic (multi-tenant)
-configuration, metrics + tracing. AOT/trim friendly
+interceptors, lifecycle event receivers, dead-token pruning, multi-app keyed registration, runtime
+static/dynamic (multi-tenant) configuration, metrics + tracing. AOT/trim friendly
 (verified by a native-AOT smoke test).
 
 See [`samples/Push.Api`](./samples/Push.Api) for a runnable ASP.NET Core API with a Scalar UI.
@@ -143,6 +143,7 @@ services.AddPushNotifications(push =>
 
     // push.UseDocumentDb(o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=push.db"));
     // push.AddInterceptor<LocalizationInterceptor>();
+    // push.AddEventReceiver<PushTelemetry>();   // observe batch/sent/failed (zero or more)
     // push.Configure(m => m.MaxDegreeOfParallelism = 25);
 });
 ```

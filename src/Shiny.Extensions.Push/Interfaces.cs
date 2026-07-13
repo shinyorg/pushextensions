@@ -104,6 +104,46 @@ public interface IPushInterceptor
 }
 
 
+/// <summary>
+/// A read-only observer of the send lifecycle. Unlike <see cref="IPushInterceptor"/> — which is a
+/// per-device <em>pipeline</em> participant that can skip or mutate the notification — a receiver only
+/// <em>reports</em> what happened (telemetry, receipts, dead-letter capture, dashboards) and cannot alter
+/// delivery. Zero or more may be registered; the manager fans out to all of them, and an exception thrown
+/// by one is logged and swallowed — it never affects delivery or the other receivers. Per-device hooks are
+/// invoked concurrently across a batch, so implementations must be thread-safe.
+/// </summary>
+public interface IPushEventReceiver
+{
+    /// <summary>
+    /// Called once when a send batch begins, before any device is contacted. <paramref name="notification"/>
+    /// is the original batch notification (before any per-device interceptor mutation).
+    /// </summary>
+    Task OnBatchStarted(Guid batchId, PushFilter filter, PushNotification notification, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Called for each device delivered to successfully. <paramref name="notification"/> is the notification
+    /// actually sent to this device (after any interceptor mutation).
+    /// </summary>
+    Task OnSent(Guid batchId, DeviceRegistration registration, PushNotification notification, PushDeliveryResult result, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Called for each device whose delivery failed — including the normalized failures that never throw
+    /// (<see cref="PushDeliveryStatus.TokenExpired"/>, <see cref="PushDeliveryStatus.InvalidToken"/>,
+    /// <see cref="PushDeliveryStatus.RateLimited"/>, <see cref="PushDeliveryStatus.Error"/>). Inspect
+    /// <paramref name="result"/> for the status, reason and any transport <see cref="PushDeliveryResult.Error"/>.
+    /// (Interceptor-<see cref="InterceptorResult.Skip"/> and no-provider outcomes are not failures and are
+    /// surfaced only in the aggregate <see cref="OnBatchFinished"/> result.)
+    /// </summary>
+    Task OnFailed(Guid batchId, DeviceRegistration registration, PushNotification notification, PushDeliveryResult result, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Called once when the batch completes, carrying the aggregate <see cref="PushSendResult"/> (per-device
+    /// results plus sent/failed/pruned/skipped counts).
+    /// </summary>
+    Task OnBatchFinished(Guid batchId, PushNotification notification, PushSendResult result, CancellationToken cancellationToken = default);
+}
+
+
 /// <summary>The primary entry point applications use to register devices and send notifications.</summary>
 public interface IPushManager
 {
@@ -140,6 +180,9 @@ public interface IPushBuilder
 
     /// <summary>Add an interceptor. Additive — they run in registration order.</summary>
     IPushBuilder AddInterceptor<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] T>() where T : class, IPushInterceptor;
+
+    /// <summary>Add a lifecycle event receiver. Additive — register zero or more; all are notified.</summary>
+    IPushBuilder AddEventReceiver<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] T>() where T : class, IPushEventReceiver;
 
     /// <summary>Replace the manager implementation. Defaults to the built-in <see cref="Infrastructure.PushManager"/>.</summary>
     IPushBuilder UseManager<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] T>() where T : class, IPushManager;

@@ -18,6 +18,7 @@ public class PushManager(
     IPushRepository repository,
     IEnumerable<IPushProvider> providers,
     IEnumerable<IPushInterceptor> interceptors,
+    IEnumerable<IPushEventReceiver> eventReceivers,
     IOptions<PushManagerOptions> options,
     PushMetrics metrics,
     ILogger<PushManager> logger
@@ -25,6 +26,7 @@ public class PushManager(
 {
     readonly IReadOnlyList<IPushProvider> providers = providers.ToList();
     readonly IReadOnlyList<IPushInterceptor> interceptors = interceptors.ToList();
+    readonly IReadOnlyList<IPushEventReceiver> eventReceivers = eventReceivers.ToList();
     readonly PushManagerOptions options = options.Value;
 
 
@@ -67,6 +69,9 @@ public class PushManager(
 
         logger.LogInformation("Push batch {BatchId} starting", batchId);
 
+        if (eventReceivers.Count > 0)
+            await FanOutReceivers(r => r.OnBatchStarted(batchId, filter, notification, cancellationToken)).ConfigureAwait(false);
+
         var parallelOptions = new ParallelOptions
         {
             MaxDegreeOfParallelism = Math.Max(1, options.MaxDegreeOfParallelism),
@@ -103,6 +108,10 @@ public class PushManager(
             "Push batch {BatchId} complete: {Sent} sent, {Failed} failed, {Removed} pruned, {Skipped} skipped",
             batchId, sendResult.Sent, sendResult.Failed, sendResult.TokensRemoved, sendResult.Skipped
         );
+
+        if (eventReceivers.Count > 0)
+            await FanOutReceivers(r => r.OnBatchFinished(batchId, notification, sendResult, cancellationToken)).ConfigureAwait(false);
+
         return sendResult;
     }
 
@@ -386,6 +395,8 @@ public class PushManager(
                     await SafeRepo(() => repository.UpdateToken(registration.DeviceToken, registration.Platform, result.UpdatedToken, ct)).ConfigureAwait(false);
 
                 await FanOut(i => i.OnSent(context, result, ct)).ConfigureAwait(false);
+                if (eventReceivers.Count > 0)
+                    await FanOutReceivers(r => r.OnSent(context.BatchId, registration, context.Notification, result, ct)).ConfigureAwait(false);
                 break;
 
             case PushDeliveryStatus.TokenExpired:
@@ -397,12 +408,16 @@ public class PushManager(
                     await SafeRepo(() => repository.Remove(registration.DeviceToken, registration.Platform, ct)).ConfigureAwait(false);
                 }
                 await FanOut(i => i.OnFailed(context, result, ct)).ConfigureAwait(false);
+                if (eventReceivers.Count > 0)
+                    await FanOutReceivers(r => r.OnFailed(context.BatchId, registration, context.Notification, result, ct)).ConfigureAwait(false);
                 break;
 
             default:
                 metrics.RecordFailed(registration.Platform, providerId, result.Status, elapsedMs);
                 logger.LogWarning("Delivery failed for {Token}: {Status} {Reason}", Mask(registration.DeviceToken), result.Status, result.Reason);
                 await FanOut(i => i.OnFailed(context, result, ct)).ConfigureAwait(false);
+                if (eventReceivers.Count > 0)
+                    await FanOutReceivers(r => r.OnFailed(context.BatchId, registration, context.Notification, result, ct)).ConfigureAwait(false);
                 break;
         }
     }
@@ -419,6 +434,24 @@ public class PushManager(
             catch (Exception ex)
             {
                 logger.LogError(ex, "Interceptor {Interceptor} threw", interceptor.GetType().Name);
+            }
+        }
+    }
+
+
+    // Fan out a lifecycle event to every registered receiver. Mirrors FanOut: a throwing receiver is logged
+    // and swallowed so observers can never break a batch or affect one another.
+    async Task FanOutReceivers(Func<IPushEventReceiver, Task> action)
+    {
+        foreach (var receiver in eventReceivers)
+        {
+            try
+            {
+                await action(receiver).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Push event receiver {Receiver} threw", receiver.GetType().Name);
             }
         }
     }

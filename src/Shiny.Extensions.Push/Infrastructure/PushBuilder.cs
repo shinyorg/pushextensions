@@ -37,6 +37,13 @@ sealed class PushBuilder(IServiceCollection services) : IPushBuilder
     }
 
 
+    public IPushBuilder AddEventReceiver<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] T>() where T : class, IPushEventReceiver
+    {
+        Services.AddSingleton<IPushEventReceiver, T>();
+        return this;
+    }
+
+
     public IPushBuilder UseManager<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] T>() where T : class, IPushManager
     {
         Services.RemoveAll<IPushManager>();
