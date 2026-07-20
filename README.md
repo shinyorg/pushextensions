@@ -1,7 +1,7 @@
 # Shiny.Extensions.Push
 
 Server-side push notification dispatch for .NET. Provider-agnostic core with transports for **APNs**
-(direct, `.p8`/ES256 over HTTP/2), **FCM** (HTTP v1, with multicast batching), **Web Push** (VAPID +
+(direct, `.p8`/ES256 over HTTP/2), **FCM** (HTTP v1), **Web Push** (VAPID +
 RFC 8291) and **WNS** (Windows, modern Windows App SDK / Entra auth). Structured targeting, topics,
 interceptors, lifecycle event receivers, dead-token pruning, multi-app keyed registration, runtime
 static/dynamic (multi-tenant) configuration, metrics + tracing. AOT/trim friendly
@@ -212,11 +212,11 @@ new PushNotification
 Dead tokens (APNs `410 Unregistered` / `BadDeviceToken`) are pruned automatically; rotated tokens are
 applied back to the repository.
 
-**Batching (FCM multicast):** when a provider supports it, devices that share the same notification are
-delivered in one transport call (FCM packs up to 500 into a multipart `/batch` request) instead of one
-request per device — automatic for broadcasts and topic fan-out, no call-site change. Per-device pruning,
-rotation, and `OnSent`/`OnFailed` are preserved. Disable with `push.Configure(m => m.EnableBatching = false)`;
-make a custom transport batchable by implementing `IPushBatchProvider`.
+**Delivery fan-out and batching:** FCM HTTP v1 sends one supported `messages:send` request per device; the
+manager bounds concurrent requests with `PushManagerOptions.MaxDegreeOfParallelism`. Per-device pruning,
+rotation, and `OnSent`/`OnFailed` are preserved. A custom transport with a real bulk endpoint can implement
+`IPushBatchProvider`; disable such provider-specific batching with
+`push.Configure(m => m.EnableBatching = false)`.
 
 ## Multiple apps (multi-keyed)
 

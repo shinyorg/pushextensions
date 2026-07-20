@@ -174,10 +174,11 @@ token, and caches it (~55 min, `SemaphoreSlim`-guarded). Payload built with `Utf
 `INVALID_ARGUMENT`/`SENDER_ID_MISMATCH`→InvalidToken, `QUOTA_EXCEEDED`/`UNAVAILABLE`→RateLimited.
 Multi-app keyed like APNs. **Native-token-only — FCM-native topic pub/sub is not used** (we fan out via
 the repository for cross-provider consistency).
-- **FCM multicast (decision 15).** `FcmProvider` also implements `IPushBatchProvider` (`MaxBatchSize` 500):
-  `SendBatch` packs up to 500 `messages:send` sub-requests into one multipart `/batch` request and parses
-  the multipart/mixed response back to per-device results (so dead-token pruning / id rotation still work).
-  A single-device batch short-circuits to the normal endpoint.
+- **No FCM provider-side batching (correction to decision 15, 2026-07-20).** Google's multipart
+  `fcm.googleapis.com/batch` endpoint has been discontinued. Both FCM providers therefore implement only
+  `IPushProvider`; the manager fans out supported `messages:send` requests with bounded concurrency. Only an
+  explicit FCM `UNREGISTERED` error prunes a token — a generic HTTP 404 maps to `Error`, preventing an endpoint
+  or project-level failure from deleting valid registrations.
 
 ### 12. WebPush provider (VAPID + RFC 8291, BCL crypto only).
 `Shiny.Extensions.Push.WebPush` claims `WebBrowser`. Encryption (`WebPushCrypto`) is RFC 8291 message
@@ -197,7 +198,7 @@ at the repository layer so it works identically across every provider (not tied 
 `ProviderMessageId` on success (APNs `apns-id` header, FCM message `name`, WebPush `Location`).
 Batched sends emit one `push.deliver.batch` span (with a `push.batch_size` tag) instead of per-device spans.
 
-### 15. Provider-side batching via `IPushBatchProvider`. (decision — "FCM multicast")
+### 15. Provider-side batching via `IPushBatchProvider`.
 An **optional** capability a provider implements when it can deliver one notification to many devices in a
 single transport op (`MaxBatchSize` + `SendBatch`). When `PushManagerOptions.EnableBatching` (default on)
 and at least one registered provider implements it, the manager switches from per-device streaming to a
@@ -212,8 +213,9 @@ solitary devices) falls back to the per-device path.
   equality over the `Data` dictionary).
 - Per-device dead-token pruning, token rotation, metrics, and `OnSent`/`OnFailed` fan-out are unchanged —
   `SendBatch` returns one result per registration (same order) and the manager handles each individually.
-- A thrown `SendBatch` or a result-count mismatch fails the whole batch (one `Error` per device); a non-2xx
-  on the batch envelope itself maps every device uniformly.
+- A thrown `SendBatch` or a result-count mismatch fails the whole batch (one `Error` per device).
+- No built-in provider currently implements this capability. It remains available for custom transports with
+  a supported bulk endpoint; in particular, FCM must not use it because Google's multipart endpoint is gone.
 
 ### 16. WNS provider (Windows, modern Entra auth). (user decision, 2026-06-21 — "Modern only")
 `Shiny.Extensions.Push.Wns` claims `DevicePlatform.Windows`. It uses the **Windows App SDK / Microsoft Entra
@@ -259,7 +261,7 @@ This lets a server onboard/offboard apps or tenants and rotate keys **without a 
   `CredentialTokenCache` + `IHttpClientFactory`) and bridge to the scoped provider via `IServiceScopeFactory`:
   `ScopedConfiguration.Resolve` opens a fresh scope per send, resolves `IPushConfigurationProvider`, fetches the
   config, disposes the scope — the rest of the send (mint/HTTP) runs outside it. **Cost:** one DI scope per
-  device (per app-group for FCM batches); acceptable for the scoped-DbContext use case.
+  device; acceptable for the scoped-DbContext use case.
 - **No cache management (user decision).** The library keeps only a minimal per-app credential reuse map
   (`CredentialTokenCache`, a plain unbounded `ConcurrentDictionary`, no eviction/size/version bookkeeping) —
   required because Apple rate-limits JWT *generation* and re-exchanging an FCM/WNS bearer per send is a round
@@ -270,9 +272,8 @@ This lets a server onboard/offboard apps or tenants and rotate keys **without a 
 - **Shared send-cores.** The transport HTTP + error mapping was extracted to internal statics
   (`ApnsSender`/`ApnsJwt`, `FcmSender`/`FcmToken`, `WebPushSender` + static `WebPushVapid`, `WnsSender`/`WnsToken`)
   so the keyed and config-driven providers share one code path (keyed provider behaviour is unchanged).
-- **FCM batching spans apps.** `FcmTenantProvider.SendBatch` groups its registrations by `AppId`, issues one
-  multipart `/batch` per app (each with that app's bearer + project id), and reassembles results in the
-  original order.
+- **FCM resolves per device.** `FcmTenantProvider.Send` resolves the registration's `AppId`, reuses that app's
+  cached bearer, and sends through the app's current Firebase project via `messages:send`.
 - Naming: the config type is `IPushConfigurationProvider`/`PushConfiguration` (app-centric, not "tenant") per
   user rename; the delivery-provider classes keep the `*TenantProvider` name as the multi-app/tenant-capable
   providers. Files live in `src/Shiny.Extensions.Push/Configuration/`.
@@ -301,8 +302,8 @@ delivery. Registered additively via `IPushBuilder.AddEventReceiver<T>()` (as `IE
 ## Roadmap / known gaps (not yet built)
 
 - **DocumentDb read pushdown beyond UserIdentifier/AppId** — tags/topics/platform still filter in-process.
-- **WebPush native batching** — WebPush has no multicast endpoint; still one request per device (the manager
-  already fans these out with bounded concurrency). FCM multicast is done (decision 15).
+- **Built-in provider batching** — none of the current transports exposes a supported multicast endpoint;
+  they send per device while the manager fans out with bounded concurrency.
 - **Outbox/durable queue** — out of scope for v1; the provider/result seams allow adding it later.
 
 ### Explicitly out of scope (decided, not "todo")
@@ -312,7 +313,7 @@ delivery. Registered additively via `IPushBuilder.AddEventReceiver<T>()` (as `IE
 ### Done since the first cut
 - ✅ **Metrics** (decision 8) · **Multi-app keyed** (decision 9) · **DocumentDb repo** (decision 10).
 - ✅ **FCM** (11) · **WebPush** (12) · **Topics** (13) · **Tracing + apns-id** (14) · **DocumentDb read pushdown** (decision 10).
-- ✅ **FCM multicast / provider batching** (decision 15, `IPushBatchProvider`).
+- ✅ **Provider batching infrastructure** (decision 15, `IPushBatchProvider`; available to custom transports).
 - ✅ **Sample API + Scalar** (`samples/Push.Api`) and **native-AOT smoke test** (`samples/AotSmokeTest`, CI job `aot-smoke`) — all 4 providers verified AOT-publishable + runnable.
 - ✅ **WNS / Windows provider** (decision 16).
 - ✅ **Runtime configuration provider — static + dynamic multi-tenancy** (decision 17, `IPushConfigurationProvider`).
