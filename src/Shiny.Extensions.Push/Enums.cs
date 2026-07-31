@@ -68,6 +68,32 @@ public enum PushDeliveryStatus
 }
 
 
+/// <summary>
+/// What a <see cref="DeviceRegistration.DeviceToken"/> actually addresses. Apple issues Live Activity
+/// tokens that look like device tokens but are only valid for the <c>liveactivity</c> push type and its
+/// own topic — sending an ordinary alert to one is rejected (<c>DeviceTokenNotForTopic</c>) and would get
+/// the token pruned as invalid. Tracking the kind lets one repository hold all three safely, and makes
+/// <see cref="PushFilter"/> exclude Live Activity tokens from normal sends by default.
+/// </summary>
+public enum PushTokenKind
+{
+    /// <summary>An ordinary APNs/FCM/WNS/WebPush token for alerts and background pushes. The default.</summary>
+    Device,
+
+    /// <summary>
+    /// An ActivityKit push-to-start token (iOS 17.2+). One per app install, long-lived, and the only token
+    /// that can start an activity while the app isn't running.
+    /// </summary>
+    LiveActivityStart,
+
+    /// <summary>
+    /// A single Live Activity's update token. Issued when that activity starts and dead when it ends, so
+    /// expect these to churn — a 410/Unregistered on one simply means the activity is over.
+    /// </summary>
+    LiveActivityUpdate
+}
+
+
 /// <summary>How a registration's tags are matched against a <see cref="PushFilter"/>.</summary>
 public enum TagMatch
 {

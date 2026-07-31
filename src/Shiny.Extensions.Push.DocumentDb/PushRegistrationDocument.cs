@@ -15,6 +15,7 @@ public sealed class PushRegistrationDocument
     public string Id { get; set; } = "";
     public string DeviceToken { get; set; } = "";
     public DevicePlatform Platform { get; set; }
+    public PushTokenKind TokenKind { get; set; }
     public string? AppId { get; set; }
     public string? DeviceId { get; set; }
     public string? UserIdentifier { get; set; }
@@ -35,6 +36,7 @@ public sealed class PushRegistrationDocument
         Id = BuildId(r.Platform, r.DeviceToken),
         DeviceToken = r.DeviceToken,
         Platform = r.Platform,
+        TokenKind = r.TokenKind,
         AppId = r.AppId,
         DeviceId = r.DeviceId,
         UserIdentifier = r.UserIdentifier,
@@ -52,6 +54,7 @@ public sealed class PushRegistrationDocument
     {
         DeviceToken = this.DeviceToken,
         Platform = this.Platform,
+        TokenKind = this.TokenKind,
         AppId = this.AppId,
         DeviceId = this.DeviceId,
         UserIdentifier = this.UserIdentifier,

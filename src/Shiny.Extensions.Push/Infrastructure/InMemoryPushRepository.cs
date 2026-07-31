@@ -17,9 +17,10 @@ public sealed class InMemoryPushRepository : IPushRepository
 
     static string Key(string deviceToken, DevicePlatform platform) => $"{platform}::{deviceToken}";
 
-    // Identity key: prefer the stable DeviceId, fall back to token+platform.
+    // Identity key: prefer the stable DeviceId, fall back to token+platform. The token kind is part of the
+    // key because one install legitimately holds several tokens (device + Live Activity) under one DeviceId.
     static string IdentityKey(DeviceRegistration r) =>
-        r.DeviceId is { Length: > 0 } id ? $"id::{r.Platform}::{id}" : Key(r.DeviceToken, r.Platform);
+        r.DeviceId is { Length: > 0 } id ? $"id::{r.Platform}::{r.TokenKind}::{id}" : Key(r.DeviceToken, r.Platform);
 
 
     public Task Save(DeviceRegistration registration, CancellationToken cancellationToken = default)
@@ -33,6 +34,7 @@ public sealed class InMemoryPushRepository : IPushRepository
             {
                 if (kvp.Value.DeviceId == registration.DeviceId &&
                     kvp.Value.Platform == registration.Platform &&
+                    kvp.Value.TokenKind == registration.TokenKind &&
                     kvp.Key != identity)
                 {
                     this.store.TryRemove(kvp.Key, out _);

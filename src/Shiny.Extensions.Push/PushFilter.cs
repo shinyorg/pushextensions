@@ -37,6 +37,14 @@ public record PushFilter
     /// <summary>Target registrations subscribed to this topic.</summary>
     public string? Topic { get; init; }
 
+    /// <summary>
+    /// Which kind of token to target. Unlike the other clauses this always constrains — it defaults to
+    /// <see cref="PushTokenKind.Device"/> so a broadcast can never accidentally fire an alert at a Live
+    /// Activity token (APNs would reject it and the manager would prune it). Live Activity sends set this,
+    /// which <see cref="LiveActivityPushExtensions.SendLiveActivity"/> does for you.
+    /// </summary>
+    public PushTokenKind TokenKind { get; init; } = PushTokenKind.Device;
+
     /// <summary>A filter that matches every registration.</summary>
     public static PushFilter Broadcast { get; } = new();
 
@@ -46,6 +54,9 @@ public record PushFilter
     /// </summary>
     public bool Matches(DeviceRegistration registration)
     {
+        if (this.TokenKind != registration.TokenKind)
+            return false;
+
         if (this.UserIdentifier is not null &&
             !string.Equals(this.UserIdentifier, registration.UserIdentifier, StringComparison.Ordinal))
             return false;

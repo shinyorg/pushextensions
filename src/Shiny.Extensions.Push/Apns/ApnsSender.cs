@@ -34,7 +34,8 @@ static class ApnsSender
         var host = env == PushEnvironment.Sandbox ? SandboxHost : ProductionHost;
 
         var apple = notification.Apple;
-        var silent = apple?.ContentAvailable == true && notification.Title is null && notification.Message is null;
+        var live = apple?.LiveActivity;
+        var silent = live is null && apple?.ContentAvailable == true && notification.Title is null && notification.Message is null;
 
         using var request = new HttpRequestMessage(HttpMethod.Post, $"{host}/3/device/{registration.DeviceToken}")
         {
@@ -44,11 +45,19 @@ static class ApnsSender
         };
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
-        request.Headers.TryAddWithoutValidation("authorization", $"bearer {jwt}");
-        request.Headers.TryAddWithoutValidation("apns-topic", apple?.TopicOverride ?? options.BundleId);
-        request.Headers.TryAddWithoutValidation("apns-push-type", apple?.PushTypeOverride ?? (silent ? "background" : "alert"));
+        // Live Activities have their own push type and their own topic — the bundle id alone is rejected
+        // with DeviceTokenNotForTopic.
+        var topic = apple?.TopicOverride
+            ?? (live is null ? options.BundleId : $"{options.BundleId}.push-type.liveactivity");
 
-        // Background pushes must be priority 5.
+        var pushType = apple?.PushTypeOverride
+            ?? (live is not null ? "liveactivity" : silent ? "background" : "alert");
+
+        request.Headers.TryAddWithoutValidation("authorization", $"bearer {jwt}");
+        request.Headers.TryAddWithoutValidation("apns-topic", topic);
+        request.Headers.TryAddWithoutValidation("apns-push-type", pushType);
+
+        // Background pushes must be priority 5. Live Activity updates accept 5 (budgeted/throttled) or 10.
         var priority = silent || notification.Priority == PushPriority.Normal ? "5" : "10";
         request.Headers.TryAddWithoutValidation("apns-priority", priority);
 

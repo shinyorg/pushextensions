@@ -218,6 +218,75 @@ request per device — automatic for broadcasts and topic fan-out, no call-site 
 rotation, and `OnSent`/`OnFailed` are preserved. Disable with `push.Configure(m => m.EnableBatching = false)`;
 make a custom transport batchable by implementing `IPushBatchProvider`.
 
+## Live Activities (iOS 16.1+)
+
+ActivityKit Live Activities are pushed over APNs, but with their own push type, their own topic, and a
+completely different `aps` body. Set `Apple.LiveActivity` (or use the `LiveActivityPush` factories) and
+the transport handles all three.
+
+**Live Activity tokens are not device tokens.** Apple issues a *push-to-start* token (one per install,
+iOS 17.2+) and a per-activity *update* token (born and dead with the activity). Sending an ordinary
+alert to one is rejected with `DeviceTokenNotForTopic`, so registrations carry a `TokenKind` and
+`PushFilter` targets `PushTokenKind.Device` by default — a `Broadcast` can never accidentally hit (and
+prune) a Live Activity token.
+
+```csharp
+// Store the tokens your app reports
+await pushManager.RegisterLiveActivityToken(
+    new DeviceRegistration
+    {
+        DeviceToken    = "<push-to-start-token>",
+        Platform       = DevicePlatform.iOS,
+        DeviceId       = "install-guid",
+        UserIdentifier = "user-42"
+    },
+    PushTokenKind.LiveActivityStart
+);
+
+// Start an activity without the app running (iOS 17.2+)
+await pushManager.SendLiveActivity(
+    LiveActivityPush.Start(
+        attributesType: "DeliveryAttributes",              // the Swift ActivityAttributes type name
+        attributes:     new Dictionary<string, LiveActivityValue> { ["orderNumber"] = "A-1234" },
+        contentState:   new Dictionary<string, LiveActivityValue>
+        {
+            ["driverName"]     = "Sam",
+            ["stopsRemaining"] = 3,
+            ["progress"]       = 0.65,
+            ["eta"]            = DateTimeOffset.UtcNow.AddMinutes(12)
+        },
+        alertTitle: "Your order is on the way"
+    ),
+    new PushFilter { UserIdentifier = "user-42" }
+);
+
+// Update / end a specific activity
+await pushManager.SendLiveActivityToTokens([activityToken], LiveActivityPush.Update(state));
+await pushManager.SendLiveActivityToTokens([activityToken], LiveActivityPush.End(finalState, dismissalDate: DateTimeOffset.UtcNow.AddMinutes(5)));
+```
+
+`LiveActivityValue` exists because the widget's Swift `ContentState` is a strongly typed `Codable`
+struct — a number must arrive as a JSON number or the whole update is silently dropped. Implicit
+conversions cover string/int/long/double/bool/`DateTimeOffset`, and `Array`/`Object`/`Json` cover nested
+shapes.
+
+> **Dates:** ActivityKit decodes with a stock Swift `JSONDecoder`, whose default strategy reads a `Date`
+> as *seconds since 2001-01-01* — not the Unix epoch. `LiveActivityValue.Date(...)` defaults to that
+> Apple reference encoding; pass `LiveActivityDateEncoding.UnixSeconds`/`Iso8601` if your widget decodes
+> differently.
+
+**Broadcast channels (iOS 18+)** replace one-push-per-activity with one push per *channel* — the shape
+sports scores and transit arrivals want. Resolve `ApnsBroadcastClient` from DI:
+
+```csharp
+var channel = await broadcast.CreateChannel();               // hand channel.ChannelId to the app
+await broadcast.Broadcast(channel.ChannelId!, LiveActivityPush.Update(state));
+await broadcast.DeleteChannel(channel.ChannelId!);
+```
+
+The client app side (starting activities, reporting tokens, Android's equivalent) is
+[Shiny.Mobile.LiveActivities](https://github.com/shinyorg/liveactivities).
+
 ## Multiple apps (multi-keyed)
 
 Register one keyed APNs provider per app. Devices carry the matching `AppId`; the manager routes by it.

@@ -83,6 +83,14 @@ public record ApplePushOptions
 
     /// <summary>Overrides <c>apns-push-type</c> (e.g. "voip", "background"). Defaults are inferred.</summary>
     public string? PushTypeOverride { get; init; }
+
+    /// <summary>
+    /// Turns this into an ActivityKit Live Activity push (iOS 16.1+): the transport swaps in the
+    /// <c>liveactivity</c> push type and the <c>.push-type.liveactivity</c> topic, and the payload becomes
+    /// an <c>event</c>/<c>content-state</c> body instead of an alert. Must be addressed to a Live Activity
+    /// token, not the device token — see <see cref="PushTokenKind"/>.
+    /// </summary>
+    public LiveActivityPushOptions? LiveActivity { get; init; }
 }
 
 

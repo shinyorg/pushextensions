@@ -19,6 +19,24 @@ triggers:
   - AddApns
   - ApnsProvider
   - ApnsOptions
+  - LiveActivityPush
+  - LiveActivityPushOptions
+  - LiveActivityValue
+  - LiveActivityEvent
+  - LiveActivityDateEncoding
+  - PushTokenKind
+  - SendLiveActivity
+  - SendLiveActivityToTokens
+  - RegisterLiveActivityToken
+  - ApnsBroadcastClient
+  - ApnsChannelStoragePolicy
+  - live activity push
+  - ActivityKit push
+  - push to start
+  - push-to-start token
+  - content-state
+  - broadcast channel
+  - apns-channel-id
   - AddFcm
   - FcmProvider
   - FcmOptions
@@ -233,6 +251,76 @@ new PushNotification
 };
 ```
 
+## Live Activities (ActivityKit, iOS 16.1+)
+
+Set `Apple.LiveActivity` and the APNs transport switches push type to `liveactivity`, the topic to
+`<bundle-id>.push-type.liveactivity`, and the `aps` body to `event`/`timestamp`/`content-state`. Use the
+`LiveActivityPush.Start/Update/End` factories — they enforce the per-event required fields.
+
+**Three token kinds, and they are not interchangeable.** `DeviceRegistration.TokenKind` records which
+one a row holds; `PushFilter.TokenKind` defaults to `PushTokenKind.Device`, so ordinary sends and
+broadcasts never touch (and never prune) a Live Activity token.
+
+| Event | Token | Kind |
+|---|---|---|
+| `Start` (push-to-start, iOS 17.2+) | one per app install, long-lived | `PushTokenKind.LiveActivityStart` |
+| `Update` / `End` | one per activity, dies with it | `PushTokenKind.LiveActivityUpdate` |
+
+```csharp
+// register a token the app reported
+await pushManager.RegisterLiveActivityToken(
+    new DeviceRegistration { DeviceToken = token, Platform = DevicePlatform.iOS, UserIdentifier = "user-42" },
+    PushTokenKind.LiveActivityStart
+);
+
+// start (attributesType is the Swift ActivityAttributes struct name)
+await pushManager.SendLiveActivity(
+    LiveActivityPush.Start(
+        "DeliveryAttributes",
+        new Dictionary<string, LiveActivityValue> { ["orderNumber"] = "A-1234" },
+        new Dictionary<string, LiveActivityValue> { ["stopsRemaining"] = 3, ["progress"] = 0.65 },
+        alertTitle: "On the way"
+    ),
+    new PushFilter { UserIdentifier = "user-42" }
+);
+
+// update / end a known activity
+await pushManager.SendLiveActivityToTokens([activityToken], LiveActivityPush.Update(state));
+await pushManager.SendLiveActivityToTokens([activityToken], LiveActivityPush.End(dismissalDate: DateTimeOffset.UtcNow.AddMinutes(5)));
+```
+
+`SendLiveActivity` infers the token kind from the event; `SendLiveActivityToTokens` is the common path
+for update/end when the server already holds the activity token.
+
+### LiveActivityValue (typed content state)
+
+`ContentState` is `IReadOnlyDictionary<string, LiveActivityValue>`, **not** a string dictionary: the
+widget's Swift `ContentState` is a `Codable` struct, so a number must arrive as a JSON number or
+ActivityKit drops the whole update. Implicit conversions exist for `string`, `int`, `long`, `double`,
+`bool`, `DateTimeOffset`; use `LiveActivityValue.Array/Object/Json/Null` for nested shapes.
+
+**Dates:** ActivityKit decodes with a stock Swift `JSONDecoder` — its default reads a `Date` as seconds
+since **2001-01-01**, not the Unix epoch. `LiveActivityValue.Date(...)` defaults to that
+(`LiveActivityDateEncoding.AppleReference`); pass `UnixSeconds` or `Iso8601` only if the widget declares
+a matching strategy.
+
+Other options on `LiveActivityPushOptions`: `StaleDate`, `DismissalDate` (end only), `RelevanceScore`,
+`Alert` (with the notification's `Title`/`Message`/`Sound`), `RequestPushToken` and `InputPushChannel`
+(start only). Payloads are capped at 4KB.
+
+### Broadcast channels (iOS 18+)
+
+One push updates every subscriber instead of one push per activity. Resolve `ApnsBroadcastClient` from
+DI (keyed by the same app key as `AddApns`, or unkeyed for the default registration):
+
+```csharp
+var channel = await broadcast.CreateChannel(ApnsChannelStoragePolicy.Store);
+// give channel.ChannelId to the app; it passes it to ActivityKit
+await broadcast.Broadcast(channel.ChannelId!, LiveActivityPush.Update(state));
+await broadcast.GetAllChannels();
+await broadcast.DeleteChannel(channel.ChannelId!);
+```
+
 ## Interceptors (localize / personalize / suppress / report)
 
 Implement `IPushInterceptor` and register with `push.AddInterceptor<T>()` (additive; run in order).
@@ -445,3 +533,6 @@ the built-in `DebugPushProvider` logs instead of sending and claims every platfo
 - Prefer a stable `DeviceId` so re-registration upserts instead of duplicating.
 - Custom payload `Data` is `string`-keyed/valued to stay AOT-safe.
 - The APNs provider caches its ES256 provider JWT (~50 min) and reuses one pooled HTTP/2 connection.
+- Live Activity tokens are **not** device tokens. Always stamp `TokenKind` when registering one, or an
+  ordinary broadcast will target it, APNs will reject it, and the manager will prune it.
+- A `410 Unregistered` on a `LiveActivityUpdate` token is normal — it means that activity ended.

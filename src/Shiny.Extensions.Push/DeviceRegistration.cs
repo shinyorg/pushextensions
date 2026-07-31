@@ -23,6 +23,12 @@ public record DeviceRegistration
     public required DevicePlatform Platform { get; init; }
 
     /// <summary>
+    /// What <see cref="DeviceToken"/> addresses. Defaults to <see cref="PushTokenKind.Device"/>; Live
+    /// Activity tokens must say so, or ordinary sends would target them and APNs would reject them.
+    /// </summary>
+    public PushTokenKind TokenKind { get; init; } = PushTokenKind.Device;
+
+    /// <summary>
     /// Which application/provider key this device belongs to, for multi-app servers. Matches the key
     /// passed to a keyed provider registration (e.g. <c>AddApns("my-app", …)</c>). Null/empty means the
     /// default (keyless) provider for the platform.

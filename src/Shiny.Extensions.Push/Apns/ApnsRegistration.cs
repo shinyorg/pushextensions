@@ -83,6 +83,18 @@ public static class ApnsRegistration
             sp.GetRequiredService<ILogger<ApnsProvider>>()
         ));
 
+        // Broadcast channels (iOS 18 Live Activities) are managed out-of-band from the send pipeline, so
+        // they get their own client rather than an IPushProvider. Keyed like the JWT cache.
+        builder.Services.AddKeyedSingleton<ApnsBroadcastClient>(key, (sp, k) => new ApnsBroadcastClient(
+            (string)k!,
+            sp.GetRequiredService<IHttpClientFactory>(),
+            sp.GetRequiredKeyedService<ApnsJwtProvider>((string)k!),
+            sp.GetRequiredService<IOptionsMonitor<ApnsOptions>>()
+        ));
+
+        if (key == Options.DefaultName)
+            builder.Services.AddSingleton(sp => sp.GetRequiredKeyedService<ApnsBroadcastClient>(Options.DefaultName));
+
         return builder;
     }
 }

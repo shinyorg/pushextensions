@@ -298,6 +298,38 @@ delivery. Registered additively via `IPushBuilder.AddEventReceiver<T>()` (as `IE
   `OnBatchFinished` `PushSendResult` (`Skipped` / `Failed` counts). Per-device hooks run under the send's
   bounded concurrency, so implementations must be thread-safe.
 
+### 19. Live Activities: a token *kind*, a typed content state, and no new package. (user decision, 2026-07-31)
+ActivityKit pushes ride the existing APNs transport rather than a new provider — same JWT cache, HTTP/2
+connection, interceptors, metrics and pruning. `ApplePushOptions.LiveActivity` flips three things at once
+in `ApnsSender`/`ApnsPayloadBuilder`: `apns-push-type: liveactivity`, the
+`<bundle-id>.push-type.liveactivity` topic, and an `aps` body of `event`/`timestamp`/`content-state`
+instead of an alert. `LiveActivityPush.Start/Update/End` are sugar that make the per-event required
+fields (attributes on start, dismissal on end) hard to get wrong; the builder throws on a violation
+rather than letting APNs reject it later.
+- **`PushTokenKind` on the registration + a non-nullable `PushFilter.TokenKind` defaulting to `Device`.**
+  This is the load-bearing decision. Apple issues push-to-start and per-activity tokens that *look* like
+  device tokens but are only valid for the `liveactivity` topic. Without a kind, a plain `Broadcast` would
+  target them, APNs would answer `DeviceTokenNotForTopic`, and the manager would faithfully **prune them
+  as invalid** — silent data loss. Making the filter clause non-nullable (rather than "null = any") means
+  every send targets exactly one kind, and the safe kind is the default. `InMemoryPushRepository`'s
+  identity key includes the kind too, so one `DeviceId` can legitimately hold a device token *and* Live
+  Activity tokens without clobbering.
+- **`LiveActivityValue`, not `Dictionary<string,string>`.** The rest of the library keeps payload data
+  string-typed for AOT safety, but the widget's Swift `ContentState` is a `Codable` struct — a number
+  arriving as `"3"` fails decoding and the update vanishes with no error anywhere. The union carries real
+  JSON types (plus arrays/objects/raw) and is still written by hand with `Utf8JsonWriter`, so AOT safety
+  is preserved.
+- **Dates default to Apple's reference epoch (2001-01-01), not Unix.** ActivityKit decodes with a stock
+  Swift `JSONDecoder` (`.deferredToDate`). This is the single most common Live Activity bug and the
+  default now matches an unmodified Swift struct; `LiveActivityDateEncoding` overrides it.
+- **Broadcast channels (iOS 18) are a separate `ApnsBroadcastClient`, not an `IPushProvider`** — channel
+  CRUD runs against Apple's management host on port 2196 and a broadcast has no `DeviceRegistration` to
+  return a `PushDeliveryResult` for, so it gets its own `ApnsBroadcastResult`. Keyed in DI like the JWT
+  cache. **Unverified against live APNs** (routes/headers are modelled on Apple's documented broadcast
+  API); the payload/token paths above are covered by tests.
+- Client side lives in **Shiny.Mobile.LiveActivities** (separate repo) — it needs an ActivityKit Swift
+  shim and an embedded widget extension, which has no business in this server package.
+
 ## Roadmap / known gaps (not yet built)
 
 - **DocumentDb read pushdown beyond UserIdentifier/AppId** — tags/topics/platform still filter in-process.
@@ -317,6 +349,7 @@ delivery. Registered additively via `IPushBuilder.AddEventReceiver<T>()` (as `IE
 - ✅ **WNS / Windows provider** (decision 16).
 - ✅ **Runtime configuration provider — static + dynamic multi-tenancy** (decision 17, `IPushConfigurationProvider`).
 - ✅ **Event receivers — read-only lifecycle observers** (decision 18, `IPushEventReceiver`).
+- ✅ **Live Activities / ActivityKit push + broadcast channels** (decision 19).
 
 ## CI / GitHub Actions
 
