@@ -329,9 +329,9 @@ Two workflows in `.github/workflows/` (brought over from `shinyorg/extensions` a
   `samples/AotSmokeTest` (installs clang) and runs the binary — `TreatWarningsAsErrors` there makes any
   trim/AOT (ILxxxx) regression fail CI.
 - **`sync-skills.yml`** — on push to `main` touching `skills/**` (and manual dispatch). Mirrors this repo's
-  `skills/*` into `shinyorg/skills` and opens a PR there. Repo references use `${{ github.repository }}`
-  (no hard-coded name). **Requires repo secret `SKILLS_REPO_TOKEN`** (a PAT with write access to
-  `shinyorg/skills`).
+  `skills/*` into `plugins/shiny/skills/` in `shinyorg/skills` (every Shiny skill lives in the single
+  `shiny` plugin) and opens a PR there. **Requires repo secret `SKILLS_REPO_TOKEN`** (a PAT with write
+  access to `shinyorg/skills`).
 
 > The repo has no git remote yet. Set the GitHub remote before these run; the GitHub repo name is
 > inferred at runtime, so nothing in the workflows hard-codes it.
