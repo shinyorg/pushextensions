@@ -133,51 +133,46 @@ public class ConfigurationTests
     }
 
 
-    // ---- FCM (cross-app batching) ----
+    // ---- FCM ----
 
     [Fact]
-    public async Task Fcm_Batch_SplitsByApp()
+    public async Task Fcm_RoutesConfig_ByAppId()
     {
         var provider = new FakeConfigProvider();
         provider.Apps["a"] = new PushConfiguration { AppId = "a", Fcm = new FcmOptions { ServiceAccountJson = ServiceAccountJson("proj-a") } };
         provider.Apps["b"] = new PushConfiguration { AppId = "b", Fcm = new FcmOptions { ServiceAccountJson = ServiceAccountJson("proj-b") } };
 
-        var batchBodies = new List<string>();
+        var sends = new List<(string Path, string Body)>();
         var stub = new StubHttpHandler(req =>
         {
             if (req.RequestUri!.Host.Contains("oauth2"))
                 return StubHttpHandler.Json(HttpStatusCode.OK, """{"access_token":"fake-token","expires_in":3600}""");
 
-            // /batch — capture the body and answer one success sub-part per device in it.
-            var body = req.Content!.ReadAsStringAsync().Result;
-            batchBodies.Add(body);
-            var count = body.Split("messages:send").Length - 1;
-            var parts = Enumerable.Range(0, count)
-                .Select(i => $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{{\"name\":\"projects/x/messages/{i}\"}}")
-                .ToArray();
-            return Multipart("resp_bnd", parts);
+            sends.Add((req.RequestUri.AbsolutePath, req.Content!.ReadAsStringAsync().Result));
+            return StubHttpHandler.Json(HttpStatusCode.OK, """{"name":"projects/x/messages/1"}""");
         });
 
         var sp = Build<FcmTenantProvider>(provider, stub, FcmProvider.HttpClientName);
         var fcm = sp.GetServices<IPushProvider>().OfType<FcmTenantProvider>().Single();
 
-        // Interleaved apps; two devices each so both groups take the /batch path.
-        var regs = new[]
-        {
-            new DeviceRegistration { DeviceToken = "a1", Platform = DevicePlatform.Android, AppId = "a" },
-            new DeviceRegistration { DeviceToken = "b1", Platform = DevicePlatform.Android, AppId = "b" },
-            new DeviceRegistration { DeviceToken = "a2", Platform = DevicePlatform.Android, AppId = "a" },
-            new DeviceRegistration { DeviceToken = "b2", Platform = DevicePlatform.Android, AppId = "b" }
-        };
-        var results = await fcm.SendBatch(new PushNotification { Title = "x" }, regs);
+        var resultA = await fcm.Send(new PushNotification { Title = "x" }, new DeviceRegistration { DeviceToken = "a1", Platform = DevicePlatform.Android, AppId = "a" });
+        var resultB = await fcm.Send(new PushNotification { Title = "x" }, new DeviceRegistration { DeviceToken = "b1", Platform = DevicePlatform.Android, AppId = "b" });
 
-        Assert.Equal(2, batchBodies.Count); // one /batch per app
-        Assert.Contains(batchBodies, x => x.Contains("a1") && x.Contains("a2") && !x.Contains("b1"));
-        Assert.Contains(batchBodies, x => x.Contains("b1") && x.Contains("b2") && !x.Contains("a1"));
-
-        // Results are reassembled in the original interleaved order.
-        Assert.Equal(4, results.Count);
-        Assert.All(results, r => Assert.Equal(PushDeliveryStatus.Success, r.Status));
+        Assert.Equal(PushDeliveryStatus.Success, resultA.Status);
+        Assert.Equal(PushDeliveryStatus.Success, resultB.Status);
+        Assert.Collection(
+            sends,
+            x =>
+            {
+                Assert.Equal("/v1/projects/proj-a/messages:send", x.Path);
+                Assert.Contains("\"token\":\"a1\"", x.Body);
+            },
+            x =>
+            {
+                Assert.Equal("/v1/projects/proj-b/messages:send", x.Path);
+                Assert.Contains("\"token\":\"b1\"", x.Body);
+            }
+        );
     }
 
 
@@ -315,22 +310,4 @@ public class ConfigurationTests
     }
 
 
-    static HttpResponseMessage Multipart(string boundary, params string[] parts)
-    {
-        var sb = new System.Text.StringBuilder();
-        foreach (var part in parts)
-        {
-            sb.Append("--").Append(boundary).Append("\r\n");
-            sb.Append("Content-Type: application/http\r\n\r\n");
-            sb.Append(part).Append("\r\n");
-        }
-        sb.Append("--").Append(boundary).Append("--\r\n");
-
-        var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(sb.ToString()) };
-        response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("multipart/mixed")
-        {
-            Parameters = { new System.Net.Http.Headers.NameValueHeaderValue("boundary", boundary) }
-        };
-        return response;
-    }
 }

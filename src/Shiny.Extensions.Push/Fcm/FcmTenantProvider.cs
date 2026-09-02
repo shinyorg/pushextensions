@@ -10,14 +10,13 @@ namespace Shiny.Extensions.Push.Fcm;
 /// The multi-app FCM provider. Claims Android for <em>any</em> app and resolves each device's
 /// <see cref="FcmOptions"/> from the scoped <see cref="IPushConfigurationProvider"/> at send time. The OAuth
 /// bearer is reused per app on its normal lifetime; the Firebase project id is re-read from the configuration
-/// each send. Batches are split by app, so one <c>/batch</c> request is issued per app with that app's
-/// credentials.
+/// each send. Requests use the supported HTTP v1 <c>messages:send</c> endpoint.
 /// </summary>
 public sealed class FcmTenantProvider(
     IHttpClientFactory httpClientFactory,
     IServiceScopeFactory scopeFactory,
     ILogger<FcmTenantProvider> logger
-) : IPushProvider, IPushBatchProvider
+) : IPushProvider
 {
     static readonly TimeSpan Skew = TimeSpan.FromMinutes(5);
 
@@ -25,8 +24,6 @@ public sealed class FcmTenantProvider(
 
 
     public string Identifier => "fcm";
-
-    public int MaxBatchSize => FcmSender.BatchLimit;
 
     public bool CanDeliver(DeviceRegistration registration)
         => registration.Platform == DevicePlatform.Android;
@@ -42,44 +39,6 @@ public sealed class FcmTenantProvider(
         return await FcmSender
             .Send(Client(), resolved.Bearer!, resolved.Account!.ProjectId, notification, registration, logger, cancellationToken)
             .ConfigureAwait(false);
-    }
-
-
-    public async Task<IReadOnlyList<PushDeliveryResult>> SendBatch(PushNotification notification, IReadOnlyList<DeviceRegistration> registrations, CancellationToken cancellationToken = default)
-    {
-        if (registrations.Count == 0)
-            return [];
-
-        // Registrations in one batch can span tenants; each tenant needs its own bearer + project + request.
-        var byTenant = registrations
-            .Select((reg, index) => (reg, index))
-            .GroupBy(x => x.reg.AppId ?? string.Empty, StringComparer.Ordinal);
-
-        var results = new PushDeliveryResult?[registrations.Count];
-
-        foreach (var group in byTenant)
-        {
-            var items = group.ToList();
-            var resolved = await Resolve(group.Key, cancellationToken).ConfigureAwait(false);
-
-            if (!resolved.Ok)
-            {
-                foreach (var (reg, index) in items)
-                    results[index] = PushDeliveryResult.Failed(reg, PushDeliveryStatus.Error, resolved.Reason, resolved.Error);
-                continue;
-            }
-
-            var regs = items.Select(x => x.reg).ToList();
-            var groupResults = await FcmSender
-                .SendBatch(Client(), resolved.Bearer!, resolved.Account!.ProjectId, notification, regs, logger, cancellationToken)
-                .ConfigureAwait(false);
-
-            for (var i = 0; i < items.Count; i++)
-                results[items[i].index] = groupResults[i];
-        }
-
-        // Every slot is filled — each tenant group writes a result (success or the Error fallback) per device.
-        return results!;
     }
 
 

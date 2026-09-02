@@ -69,11 +69,24 @@ public class FcmTests
     [Fact]
     public async Task Send_Success_CapturesMessageName()
     {
-        var provider = Build(_ => StubHttpHandler.Json(HttpStatusCode.OK, """{"name":"projects/proj/messages/0:123"}"""));
+        var provider = Build(req =>
+        {
+            Assert.Equal("/v1/projects/proj/messages:send", req.RequestUri!.AbsolutePath);
+            return StubHttpHandler.Json(HttpStatusCode.OK, """{"name":"projects/proj/messages/0:123"}""");
+        });
         var result = await provider.Send(new PushNotification { Title = "x" }, Reg);
 
         Assert.Equal(PushDeliveryStatus.Success, result.Status);
         Assert.Equal("projects/proj/messages/0:123", result.ProviderMessageId);
+    }
+
+
+    [Fact]
+    public void Provider_DoesNotAdvertiseUnsupportedBatching()
+    {
+        var provider = Build(_ => StubHttpHandler.Json(HttpStatusCode.OK, "{}"));
+
+        Assert.IsNotAssignableFrom<IPushBatchProvider>(provider);
     }
 
 
@@ -88,89 +101,14 @@ public class FcmTests
     }
 
 
-    static HttpResponseMessage Multipart(string boundary, params string[] parts)
-    {
-        var sb = new StringBuilder();
-        foreach (var part in parts)
-        {
-            sb.Append("--").Append(boundary).Append("\r\n");
-            sb.Append("Content-Type: application/http\r\n\r\n");
-            sb.Append(part).Append("\r\n");
-        }
-        sb.Append("--").Append(boundary).Append("--\r\n");
-
-        var response = new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent(sb.ToString())
-        };
-        response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("multipart/mixed")
-        {
-            Parameters = { new System.Net.Http.Headers.NameValueHeaderValue("boundary", boundary) }
-        };
-        return response;
-    }
-
-
     [Fact]
-    public async Task SendBatch_ParsesPerDeviceOutcomes()
+    public async Task Send_GenericNotFound_DoesNotExpireToken()
     {
-        const string ok = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"name\":\"projects/proj/messages/0:1\"}";
-        const string dead = "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n{\"error\":{\"status\":\"NOT_FOUND\",\"details\":[{\"errorCode\":\"UNREGISTERED\"}]}}";
+        var provider = Build(_ => StubHttpHandler.Json(
+            HttpStatusCode.NotFound,
+            """{"error":{"status":"NOT_FOUND","message":"Requested entity was not found."}}"""));
+        var result = await provider.Send(new PushNotification { Title = "x" }, Reg);
 
-        var provider = Build(req =>
-        {
-            Assert.EndsWith("/batch", req.RequestUri!.AbsolutePath);
-            return Multipart("resp_bnd", ok, dead);
-        });
-
-        var regs = new[]
-        {
-            new DeviceRegistration { DeviceToken = "good", Platform = DevicePlatform.Android },
-            new DeviceRegistration { DeviceToken = "dead", Platform = DevicePlatform.Android }
-        };
-        var results = await provider.SendBatch(new PushNotification { Title = "x" }, regs);
-
-        Assert.Equal(2, results.Count);
-        Assert.Equal(PushDeliveryStatus.Success, results[0].Status);
-        Assert.Equal("projects/proj/messages/0:1", results[0].ProviderMessageId);
-        Assert.Equal(PushDeliveryStatus.TokenExpired, results[1].Status);
-    }
-
-
-    [Fact]
-    public async Task SendBatch_SingleDevice_UsesNormalEndpoint()
-    {
-        var hitBatch = false;
-        var provider = Build(req =>
-        {
-            if (req.RequestUri!.AbsolutePath.EndsWith("/batch", StringComparison.Ordinal))
-                hitBatch = true;
-            return StubHttpHandler.Json(HttpStatusCode.OK, """{"name":"projects/proj/messages/0:9"}""");
-        });
-
-        var results = await provider.SendBatch(new PushNotification { Title = "x" }, [Reg]);
-
-        Assert.False(hitBatch);
-        Assert.Single(results);
-        Assert.Equal(PushDeliveryStatus.Success, results[0].Status);
-    }
-
-
-    [Fact]
-    public async Task SendBatch_FewerPartsThanDevices_FailsTheRemainder()
-    {
-        const string ok = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"name\":\"projects/proj/messages/0:1\"}";
-        var provider = Build(_ => Multipart("resp_bnd", ok)); // only one part for two devices
-
-        var regs = new[]
-        {
-            new DeviceRegistration { DeviceToken = "a", Platform = DevicePlatform.Android },
-            new DeviceRegistration { DeviceToken = "b", Platform = DevicePlatform.Android }
-        };
-        var results = await provider.SendBatch(new PushNotification { Title = "x" }, regs);
-
-        Assert.Equal(2, results.Count);
-        Assert.Equal(PushDeliveryStatus.Success, results[0].Status);
-        Assert.Equal(PushDeliveryStatus.Error, results[1].Status);
+        Assert.Equal(PushDeliveryStatus.Error, result.Status);
     }
 }

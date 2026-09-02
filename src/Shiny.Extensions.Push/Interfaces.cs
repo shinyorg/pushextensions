@@ -24,16 +24,16 @@ public interface IPushProvider
 
 /// <summary>
 /// An optional capability for transports that can deliver one notification to many devices in a single
-/// operation (e.g. FCM's multipart <c>/batch</c> endpoint). When batching is enabled
-/// (<see cref="PushManagerOptions.EnableBatching"/>) the manager groups devices that share the same
-/// (post-interceptor) notification and hands each group to <see cref="SendBatch"/> instead of calling
-/// <see cref="IPushProvider.Send"/> per device. Implementations must be thread-safe.
+/// provider-specific operation. When batching is enabled (<see cref="PushManagerOptions.EnableBatching"/>)
+/// the manager groups devices that share the same (post-interceptor) notification and hands each group to
+/// <see cref="SendBatch"/> instead of calling <see cref="IPushProvider.Send"/> per device. Implementations
+/// must be thread-safe.
 /// </summary>
 public interface IPushBatchProvider : IPushProvider
 {
     /// <summary>
     /// The maximum number of registrations accepted per <see cref="SendBatch"/> call. The manager splits
-    /// larger groups into batches of this size. Must be ≥ 1 (FCM HTTP v1 caps a batch at 500).
+    /// larger groups into batches of this size. Must be ≥ 1.
     /// </summary>
     int MaxBatchSize { get; }
 
