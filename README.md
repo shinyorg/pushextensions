@@ -199,6 +199,10 @@ await pushManager.Broadcast(notification);
 await pushManager.Send(notification, new PushFilter { Platforms = [DevicePlatform.iOS], Tags = ["beta"] });
 ```
 
+**Images:** set `ImageUrl` and it reaches every platform - APNs gets `mutable-content: 1` plus an `image` key (what
+the Shiny.Push iOS notification service extension attaches), FCM gets `notification.image`, Web Push gets `image`, and WNS
+toasts get a hero image. Silent pushes ignore it, and `Android.ImageUrl` still overrides it on Android.
+
 Silent / background push:
 
 ```csharp
@@ -326,3 +330,7 @@ services.AddOpenTelemetry()
 
 > Note: this library surfaces `RateLimited` on the result but does **not** retry — backoff/`Retry-After`
 > handling is the caller's responsibility by design.
+
+## Commercial Support
+
+Shipping this to production? [ShinySoft Technologies](https://shinysoft.biz), the company that builds and maintains the Shiny libraries, offers priority issue response, support agreements, architecture reviews and private office hours. See [Commercial Support](https://shinylib.net/foundation/support/?utm_source=github&utm_medium=readme#commercial-support) or [get in touch](https://shinysoft.biz/contact?utm_source=github&utm_medium=readme). Community support through GitHub issues and discussions stays free.

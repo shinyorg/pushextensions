@@ -20,6 +20,14 @@ public record PushNotification
     /// <summary>A deep link / route the client app should open when the notification is tapped.</summary>
     public string? DeepLink { get; init; }
 
+    /// <summary>
+    /// An image shown with the notification, on every platform that has one: APNs gets <c>mutable-content</c> plus a
+    /// top-level <c>image</c> key (what the Shiny.Push notification service extension attaches), FCM and Web Push get
+    /// <c>image</c>, and WNS toasts get a hero image. Ignored for silent pushes. The per-platform overrides
+    /// (<see cref="AndroidPushOptions.ImageUrl"/>) win where set.
+    /// </summary>
+    public string? ImageUrl { get; init; }
+
     /// <summary>Badge count. Null leaves the badge untouched; 0 clears it.</summary>
     public int? Badge { get; init; }
 
@@ -98,7 +106,7 @@ public record AndroidPushOptions
     /// <summary>Notification color (e.g. "#RRGGBB").</summary>
     public string? Color { get; init; }
 
-    /// <summary>Big-picture / large image url.</summary>
+    /// <summary>Big-picture / large image url. Overrides <see cref="PushNotification.ImageUrl"/> on Android.</summary>
     public string? ImageUrl { get; init; }
 }
 

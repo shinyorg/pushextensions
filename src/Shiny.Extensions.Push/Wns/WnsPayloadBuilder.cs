@@ -43,6 +43,9 @@ static class WnsPayloadBuilder
             sb.Append("<text>").Append(Escape(title)).Append("</text>");
         if (n.Message is { } message)
             sb.Append("<text>").Append(Escape(message)).Append("</text>");
+        // a remote toast image needs the internetClient capability in a packaged app
+        if (n.ImageUrl is { } image)
+            sb.Append("<image placement=\"hero\" src=\"").Append(Escape(image)).Append("\"/>");
 
         sb.Append("</binding></visual>");
 

@@ -29,6 +29,7 @@ static class FcmPayloadBuilder
                 w.WriteStartObject();
                 if (n.Title is not null) w.WriteString("title", n.Title);
                 if (n.Message is not null) w.WriteString("body", n.Message);
+                if (n.ImageUrl is { } image) w.WriteString("image", image);
                 w.WriteEndObject();
             }
 
@@ -64,7 +65,7 @@ static class FcmPayloadBuilder
                 if (android?.ChannelId is { } ch) w.WriteString("channel_id", ch);
                 if (android?.Icon is { } icon) w.WriteString("icon", icon);
                 if (android?.Color is { } color) w.WriteString("color", color);
-                if (android?.ImageUrl is { } image) w.WriteString("image", image);
+                if ((android?.ImageUrl ?? (hasAlert ? n.ImageUrl : null)) is { } androidImage) w.WriteString("image", androidImage);
                 if (n.DeepLink is { } link) w.WriteString("click_action", link);
                 w.WriteEndObject();
             }

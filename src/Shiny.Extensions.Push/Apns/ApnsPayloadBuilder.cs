@@ -42,7 +42,9 @@ static class ApnsPayloadBuilder
             if (apple?.ContentAvailable == true)
                 w.WriteNumber("content-available", 1);
 
-            if (apple?.MutableContent == true)
+            // an image only reaches the screen through a Notification Service Extension, which iOS starts only for mutable-content
+            var image = silent ? null : n.ImageUrl;
+            if (apple?.MutableContent == true || image is not null)
                 w.WriteNumber("mutable-content", 1);
 
             if (apple?.Category is { } category)
@@ -59,6 +61,10 @@ static class ApnsPayloadBuilder
 
             if (n.DeepLink is { } link && !n.Data.ContainsKey("deeplink"))
                 w.WriteString("deeplink", link);
+
+            // the first key the Shiny.Push notification service extension checks
+            if (image is not null && !n.Data.ContainsKey("image"))
+                w.WriteString("image", image);
 
             w.WriteEndObject();
         }

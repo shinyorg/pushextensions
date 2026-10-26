@@ -20,6 +20,7 @@ static class WebPushPayloadBuilder
             if (n.Message is not null) w.WriteString("body", n.Message);
             if (n.DeepLink is not null) w.WriteString("deeplink", n.DeepLink);
             if (n.WebPush?.Icon is { } icon) w.WriteString("icon", icon);
+            if (n.ImageUrl is { } image) w.WriteString("image", image);
 
             if (n.Data.Count > 0)
             {
